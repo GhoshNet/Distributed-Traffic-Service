@@ -1,0 +1,46 @@
+# ============================================================
+# Journey Booking System — Python Requirements
+# ============================================================
+# Install into the DS conda environment:
+#
+#   conda run -n DS pip install -r requirements.txt
+#
+# This file consolidates all packages needed to:
+#   - Run all 6 microservices locally
+#   - Run scripts/demo_local.py, scripts/demo.py
+#   - Run scripts/failure_tests.py
+#   - Run scripts/load_test.py
+# ============================================================
+
+# Web framework
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+
+# Database (async SQLAlchemy + PostgreSQL driver)
+sqlalchemy[asyncio]==2.0.35
+asyncpg==0.30.0
+alembic==1.13.3
+
+# Data validation
+pydantic==2.9.2
+pydantic-settings==2.5.2
+
+# Authentication
+passlib[bcrypt]==1.7.4
+bcrypt==4.2.0
+PyJWT==2.9.0
+
+# Redis client (async)
+redis==5.1.1
+
+# RabbitMQ client (async AMQP)
+aio-pika==9.4.3
+
+# HTTP client (for inter-service calls and test scripts)
+httpx==0.27.2
+
+# FastAPI form/file support
+python-multipart==0.0.12
+
+# WebSocket support (notification service)
+websockets==13.1

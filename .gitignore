@@ -1,0 +1,57 @@
+# ── Python ─────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Virtual environments ────────────────────────────────────
+venv/
+.venv/
+env/
+.env/
+# (conda env is stored globally, not in this folder)
+
+# ── Environment / secrets ───────────────────────────────────
+.env
+.env.local
+.env.*.local
+# Keep .env.example — it's a template with no real secrets
+
+# ── Runtime files (generated when services are running) ─────
+logs/
+.pids/
+
+# ── Editor / OS ─────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+*.code-workspace
+
+# ── Claude Code (personal tool settings) ───────────────────
+.claude/
+
+# ── Docker local overrides ──────────────────────────────────
+docker-compose.override.yml
+
+# ── Test / coverage output ──────────────────────────────────
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# ── Database migration local state ──────────────────────────
+# (alembic versions are committed; only local runtime files excluded)
+alembic/versions/__pycache__/

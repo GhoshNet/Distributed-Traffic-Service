@@ -1,0 +1,319 @@
+version: '3.8'
+
+services:
+  # ==========================================
+  # Infrastructure Services
+  # ==========================================
+
+  api-gateway:
+    image: nginx:1.25-alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./api-gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      user-service:
+        condition: service_healthy
+      journey-service:
+        condition: service_healthy
+      enforcement-service:
+        condition: service_healthy
+      analytics-service:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - journey-net
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: journey_admin
+      RABBITMQ_DEFAULT_PASS: journey_pass
+      RABBITMQ_DEFAULT_VHOST: journey_vhost
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - journey-net
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - journey-net
+
+  # ==========================================
+  # Databases (one per service)
+  # ==========================================
+
+  postgres-users:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: users_db
+      POSTGRES_USER: users_user
+      POSTGRES_PASSWORD: users_pass
+    volumes:
+      - pg_users_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U users_user -d users_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - journey-net
+
+  postgres-journeys:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: journeys_db
+      POSTGRES_USER: journeys_user
+      POSTGRES_PASSWORD: journeys_pass
+    volumes:
+      - pg_journeys_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U journeys_user -d journeys_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - journey-net
+
+  postgres-conflicts:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: conflicts_db
+      POSTGRES_USER: conflicts_user
+      POSTGRES_PASSWORD: conflicts_pass
+    volumes:
+      - pg_conflicts_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U conflicts_user -d conflicts_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - journey-net
+
+  postgres-analytics:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: analytics_db
+      POSTGRES_USER: analytics_user
+      POSTGRES_PASSWORD: analytics_pass
+    volumes:
+      - pg_analytics_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U analytics_user -d analytics_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - journey-net
+
+  # ==========================================
+  # Application Services
+  # ==========================================
+
+  user-service:
+    build:
+      context: .
+      dockerfile: user-service/Dockerfile
+    ports:
+      - "8001:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://users_user:users_pass@postgres-users:5432/users_db
+      REDIS_URL: redis://redis:6379/0
+      RABBITMQ_URL: amqp://journey_admin:journey_pass@rabbitmq:5672/journey_vhost
+      JWT_SECRET: super-secret-jwt-key-change-in-production
+      SERVICE_NAME: user-service
+    depends_on:
+      postgres-users:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - journey-net
+
+  journey-service:
+    build:
+      context: .
+      dockerfile: journey-service/Dockerfile
+    ports:
+      - "8002:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://journeys_user:journeys_pass@postgres-journeys:5432/journeys_db
+      REDIS_URL: redis://redis:6379/1
+      RABBITMQ_URL: amqp://journey_admin:journey_pass@rabbitmq:5672/journey_vhost
+      CONFLICT_SERVICE_URL: http://conflict-service:8000
+      JWT_SECRET: super-secret-jwt-key-change-in-production
+      SERVICE_NAME: journey-service
+    depends_on:
+      postgres-journeys:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - journey-net
+
+  conflict-service:
+    build:
+      context: .
+      dockerfile: conflict-service/Dockerfile
+    ports:
+      - "8003:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://conflicts_user:conflicts_pass@postgres-conflicts:5432/conflicts_db
+      REDIS_URL: redis://redis:6379/2
+      RABBITMQ_URL: amqp://journey_admin:journey_pass@rabbitmq:5672/journey_vhost
+      JWT_SECRET: super-secret-jwt-key-change-in-production
+      SERVICE_NAME: conflict-service
+    depends_on:
+      postgres-conflicts:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - journey-net
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: notification-service/Dockerfile
+    ports:
+      - "8004:8000"
+    environment:
+      REDIS_URL: redis://redis:6379/3
+      RABBITMQ_URL: amqp://journey_admin:journey_pass@rabbitmq:5672/journey_vhost
+      JWT_SECRET: super-secret-jwt-key-change-in-production
+      SERVICE_NAME: notification-service
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - journey-net
+
+  enforcement-service:
+    build:
+      context: .
+      dockerfile: enforcement-service/Dockerfile
+    ports:
+      - "8005:8000"
+    environment:
+      REDIS_URL: redis://redis:6379/1
+      RABBITMQ_URL: amqp://journey_admin:journey_pass@rabbitmq:5672/journey_vhost
+      JOURNEY_SERVICE_URL: http://journey-service:8000
+      JWT_SECRET: super-secret-jwt-key-change-in-production
+      SERVICE_NAME: enforcement-service
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - journey-net
+
+  analytics-service:
+    build:
+      context: .
+      dockerfile: analytics-service/Dockerfile
+    ports:
+      - "8006:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://analytics_user:analytics_pass@postgres-analytics:5432/analytics_db
+      REDIS_URL: redis://redis:6379/5
+      RABBITMQ_URL: amqp://journey_admin:journey_pass@rabbitmq:5672/journey_vhost
+      JWT_SECRET: super-secret-jwt-key-change-in-production
+      SERVICE_NAME: analytics-service
+    depends_on:
+      postgres-analytics:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - journey-net
+
+volumes:
+  rabbitmq_data:
+  redis_data:
+  pg_users_data:
+  pg_journeys_data:
+  pg_conflicts_data:
+  pg_analytics_data:
+
+networks:
+  journey-net:
+    driver: bridge

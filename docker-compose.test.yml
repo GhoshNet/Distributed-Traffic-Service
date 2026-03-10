@@ -1,0 +1,42 @@
+# Docker Compose override for failure testing
+# Usage: docker compose -f docker-compose.yml -f docker-compose.test.yml up -d
+
+version: '3.8'
+
+services:
+  # Override services with reduced health check intervals for faster failure detection
+  user-service:
+    healthcheck:
+      interval: 5s
+      timeout: 3s
+      retries: 2
+
+  journey-service:
+    healthcheck:
+      interval: 5s
+      timeout: 3s
+      retries: 2
+
+  conflict-service:
+    healthcheck:
+      interval: 5s
+      timeout: 3s
+      retries: 2
+
+  notification-service:
+    healthcheck:
+      interval: 5s
+      timeout: 3s
+      retries: 2
+
+  enforcement-service:
+    healthcheck:
+      interval: 5s
+      timeout: 3s
+      retries: 2
+
+  analytics-service:
+    healthcheck:
+      interval: 5s
+      timeout: 3s
+      retries: 2
