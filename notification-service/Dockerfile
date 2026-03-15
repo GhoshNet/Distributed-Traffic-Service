@@ -1,17 +1,20 @@
-FROM python:3.12-slim
+# ── Build stage ──────────────────────────────────────────────
+FROM golang:1.23-alpine AS builder
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc && \
-    rm -rf /var/lib/apt/lists/*
+COPY notification-service/go.mod ./
+COPY notification-service/*.go ./
+RUN go mod tidy && CGO_ENABLED=0 GOOS=linux go build -o notification-service .
 
-COPY shared/ /app/shared/
-COPY notification-service/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# ── Runtime stage ─────────────────────────────────────────────
+FROM alpine:3.20
 
-COPY notification-service/app/ /app/app/
+RUN apk --no-cache add ca-certificates
+
+WORKDIR /app
+COPY --from=builder /app/notification-service .
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+CMD ["./notification-service"]
