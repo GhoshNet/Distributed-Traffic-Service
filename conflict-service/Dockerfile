@@ -1,17 +1,20 @@
-FROM python:3.12-slim
+FROM golang:1.23-alpine AS builder
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc libpq-dev && \
-    rm -rf /var/lib/apt/lists/*
+COPY conflict-service/go.mod conflict-service/go.sum ./
+RUN go mod download
 
-COPY shared/ /app/shared/
-COPY conflict-service/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY conflict-service/*.go ./
+RUN CGO_ENABLED=0 GOOS=linux go build -o conflict-service .
 
-COPY conflict-service/app/ /app/app/
+FROM alpine:3.20
+
+RUN apk add --no-cache ca-certificates tzdata
+
+WORKDIR /app
+COPY --from=builder /app/conflict-service .
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+CMD ["./conflict-service"]
