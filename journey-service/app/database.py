@@ -67,6 +67,23 @@ class IdempotencyRecord(Base):
     )
 
 
+class OutboxEvent(Base):
+    """
+    Transactional outbox table — events are written in the same DB transaction
+    as the journey status update, then published to RabbitMQ by a background task.
+    This guarantees at-least-once delivery even if RabbitMQ is temporarily down.
+    """
+    __tablename__ = "outbox_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    routing_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+    published: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

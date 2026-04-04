@@ -113,7 +113,7 @@ async def verify_event_chain():
     from .database import async_session, EventLog
     from sqlalchemy import select
 
-    secret = os.getenv("JWT_SECRET", "secret").encode()
+    secret = os.getenv("AUDIT_HMAC_SECRET", os.getenv("JWT_SECRET", "secret")).encode()
     is_valid = True
     corrupted_event_id = None
 

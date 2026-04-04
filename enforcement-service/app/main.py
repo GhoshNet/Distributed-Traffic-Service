@@ -27,6 +27,11 @@ async def lifespan(app: FastAPI):
     try:
         broker = await get_broker()
         logger.info("Connected to RabbitMQ")
+
+        # Start consuming journey events to populate local enforcement cache
+        from .consumer import start_consumer
+        await start_consumer(broker)
+        logger.info("Enforcement event consumer started")
     except Exception as e:
         logger.warning(f"Could not connect to RabbitMQ: {e}")
 

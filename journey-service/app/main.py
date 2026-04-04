@@ -17,6 +17,7 @@ from shared.schemas import HealthResponse
 from shared.messaging import get_broker, close_broker
 from shared.tracing import CorrelationIDMiddleware
 from .scheduler import transition_journeys
+from .outbox_publisher import run_outbox_publisher
 
 setup_logging("journey-service")
 logger = logging.getLogger(__name__)
@@ -35,6 +36,10 @@ async def lifespan(app: FastAPI):
         # Start the background task for journey lifecycle transitions
         asyncio.create_task(transition_journeys())
         logger.info("Journey lifecycle scheduler started")
+
+        # Start the outbox publisher (transactional outbox pattern)
+        asyncio.create_task(run_outbox_publisher())
+        logger.info("Outbox publisher started")
     except Exception as e:
         logger.warning(f"Could not connect to RabbitMQ: {e}")
 

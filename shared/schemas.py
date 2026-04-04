@@ -37,14 +37,6 @@ class VehicleType(str, Enum):
     BUS = "BUS"
 
 
-class VehicleType(str, Enum):
-    MOTORCYCLE = "MOTORCYCLE"
-    CAR = "CAR"
-    VAN = "VAN"
-    TRUCK = "TRUCK"
-    BUS = "BUS"
-
-
 class ConflictType(str, Enum):
     TIME_OVERLAP = "TIME_OVERLAP"
     ROAD_CAPACITY = "ROAD_CAPACITY"

@@ -44,8 +44,8 @@ async def handle_event(data: dict, routing_key: str):
         metadata_json = json.dumps(data)
         event_id = str(uuid.uuid4())
         
-        # Compute new hash
-        secret = os.getenv("JWT_SECRET", "secret").encode()
+        # Compute new hash using a dedicated audit secret (not the JWT secret)
+        secret = os.getenv("AUDIT_HMAC_SECRET", os.getenv("JWT_SECRET", "secret")).encode()
         payload = f"{event_id}|{routing_key}|{prev_hash}|{metadata_json}".encode()
         event_hash = hmac.new(secret, payload, hashlib.sha256).hexdigest()
 

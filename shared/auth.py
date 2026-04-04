@@ -9,9 +9,17 @@ import jwt
 from fastapi import HTTPException, Security, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-JWT_SECRET = os.getenv("JWT_SECRET", "super-secret-jwt-key-change-in-production")
+_DEFAULT_SECRET = "super-secret-jwt-key-change-in-production"
+JWT_SECRET = os.getenv("JWT_SECRET", _DEFAULT_SECRET)
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 24
+
+if JWT_SECRET == _DEFAULT_SECRET:
+    import logging as _log
+    _log.getLogger(__name__).warning(
+        "JWT_SECRET is using the default value. "
+        "Set the JWT_SECRET environment variable before deploying to production."
+    )
 
 security = HTTPBearer()
 

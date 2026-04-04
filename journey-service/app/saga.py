@@ -122,32 +122,59 @@ class BookingSaga:
             return None
 
     @staticmethod
+    def build_event_payload(journey: Journey, event_type: EventType) -> dict:
+        """Build the event payload dict for a journey event."""
+        return {
+            "event_type": event_type.value,
+            "journey_id": journey.id,
+            "user_id": journey.user_id,
+            "origin": journey.origin,
+            "destination": journey.destination,
+            "origin_lat": journey.origin_lat,
+            "origin_lng": journey.origin_lng,
+            "destination_lat": journey.destination_lat,
+            "destination_lng": journey.destination_lng,
+            "departure_time": journey.departure_time.isoformat(),
+            "estimated_arrival_time": journey.estimated_arrival_time.isoformat(),
+            "vehicle_registration": journey.vehicle_registration,
+            "status": journey.status,
+            "rejection_reason": journey.rejection_reason,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+
+    @staticmethod
+    async def save_outbox_event(db, journey: Journey, event_type: EventType):
+        """
+        Write an event to the outbox table within the current DB transaction.
+        A background publisher will drain unpublished events to RabbitMQ,
+        guaranteeing at-least-once delivery (transactional outbox pattern).
+        """
+        import json
+        import uuid
+        from .database import OutboxEvent
+
+        payload = BookingSaga.build_event_payload(journey, event_type)
+
+        def json_serializer(obj):
+            if isinstance(obj, datetime):
+                return obj.isoformat()
+            raise TypeError(f"Type {type(obj)} not serializable")
+
+        outbox = OutboxEvent(
+            id=str(uuid.uuid4()),
+            routing_key=event_type.value,
+            payload=json.dumps(payload, default=json_serializer),
+            published=False,
+        )
+        db.add(outbox)
+
+    @staticmethod
     async def publish_journey_event(journey: Journey, event_type: EventType):
-        """Publish a journey event to RabbitMQ."""
+        """Publish a journey event directly to RabbitMQ (used by scheduler)."""
         try:
             broker = await get_broker()
-            await broker.publish(
-                routing_key=event_type.value,
-                data={
-                    "event_type": event_type.value,
-                    "journey_id": journey.id,
-                    "user_id": journey.user_id,
-                    "origin": journey.origin,
-                    "destination": journey.destination,
-                    "origin_lat": journey.origin_lat,
-                    "origin_lng": journey.origin_lng,
-                    "destination_lat": journey.destination_lat,
-                    "destination_lng": journey.destination_lng,
-                    "departure_time": journey.departure_time.isoformat(),
-                    "estimated_arrival_time": journey.estimated_arrival_time.isoformat(),
-                    "vehicle_registration": journey.vehicle_registration,
-                    "status": journey.status,
-                    "rejection_reason": journey.rejection_reason,
-                    "timestamp": datetime.utcnow().isoformat(),
-                },
-            )
+            payload = BookingSaga.build_event_payload(journey, event_type)
+            await broker.publish(routing_key=event_type.value, data=payload)
             logger.info(f"Published {event_type.value} for journey {journey.id}")
         except Exception as e:
-            # Don't fail the booking if event publishing fails
-            # Events will be retried or can be replayed from DB
             logger.error(f"Failed to publish event {event_type.value}: {e}")
