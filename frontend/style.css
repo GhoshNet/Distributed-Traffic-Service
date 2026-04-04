@@ -149,7 +149,9 @@ body {
 .leaflet-popup-tip { background: rgba(20,20,20,0.95); border: 1px solid var(--primary); }
 
 /* LISTS & ITEMS */
-.item-list { display: flex; flex-direction: column; gap: 12px; }
+.item-list { display: flex; flex-direction: column; gap: 12px; overflow-y: auto; max-height: calc(100vh - 260px); padding-right: 4px; }
+.item-list::-webkit-scrollbar { width: 5px; }
+.item-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
 .data-item {
   background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.05); padding: 16px; border-radius: 12px;
   display: flex; justify-content: space-between; align-items: center; transition: all 0.2s;

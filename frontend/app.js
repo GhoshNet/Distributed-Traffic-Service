@@ -81,7 +81,7 @@ function go(view) {
 
   if(view === 'map') setTimeout(() => mapInstance.invalidateSize(), 300);
   if(view === 'dash') loadDashboard();
-  if(view === 'journeys') loadJourneys();
+  if(view === 'journeys') { loadJourneys(); }
 }
 
 function initMap() {
@@ -123,11 +123,15 @@ function handleLiveEvent(data) {
         if(m.origin_lat) {
             const org = [m.origin_lat, m.origin_lng];
             const dst = [m.destination_lat, m.destination_lng];
-            const line = L.polyline([org, dst], {color: 'var(--primary)', weight: 3, opacity: 0.7, dashArray: '5,10'});
-            line.addTo(layerGroup);
-            L.circleMarker(org, {radius:6, color:'var(--success)', fillOpacity:1}).bindPopup(`Origin: ${m.origin}`).addTo(layerGroup);
-            L.circleMarker(dst, {radius:6, color:'var(--danger)', fillOpacity:1}).bindPopup(`Dest: ${m.destination}`).addTo(layerGroup);
+            L.polyline([org, dst], {color: '#8a2be2', weight: 3, opacity: 0.7, dashArray: '5,10'}).addTo(layerGroup);
+            L.circleMarker(org, {radius:6, color:'#00e676', fillOpacity:1}).bindPopup(`Origin: ${m.origin}`).addTo(layerGroup);
+            L.circleMarker(dst, {radius:6, color:'#ff1744', fillOpacity:1}).bindPopup(`Dest: ${m.destination}`).addTo(layerGroup);
         }
+    }
+
+    // Refresh journey list when we get journey events via WebSocket
+    if(data.event_type && data.event_type.startsWith("journey.")) {
+        loadJourneys();
     }
 }
 
@@ -174,40 +178,66 @@ async function bookJourney(e) {
         } else {
             showToast("Journey booked successfully!", "success");
         }
-        loadJourneys();
+        // Render the newly created journey immediately from the POST response
+        appendJourneyToList(d);
+        // Then refresh the full list from the server
+        await loadJourneys();
     } catch(err) { showToast(err.message, "error"); }
 }
 
-async function loadJourneys() {
-    const r = await authFetch('/api/journeys/');
-    if(!r.ok) return;
-    const js = await r.json();
-    const list = document.getElementById('journey-list');
-    list.innerHTML = js.journeys.map(j => `
-        <div class="data-item">
-            <div>
-                <div style="font-weight:600;font-size:15px;margin-bottom:4px">${j.origin} → ${j.destination}</div>
-                <div style="font-size:12px;color:var(--text-muted)">${new Date(j.departure_time).toLocaleString()} | ${j.vehicle_registration} (${j.vehicle_type})</div>
-                ${j.rejection_reason ? `<div style="font-size:12px;color:var(--warning);margin-top:4px">Reason: ${j.rejection_reason}</div>` : ''}
-            </div>
-            <div>
-                <span class="badge badge-${j.status.toLowerCase()}">${j.status}</span>
-            </div>
+function renderJourneyItem(j) {
+    return `<div class="data-item">
+        <div>
+            <div style="font-weight:600;font-size:15px;margin-bottom:4px">${j.origin} → ${j.destination}</div>
+            <div style="font-size:12px;color:var(--text-muted)">${new Date(j.departure_time).toLocaleString()} | ${j.vehicle_registration} (${j.vehicle_type})</div>
+            ${j.rejection_reason ? `<div style="font-size:12px;color:var(--warning);margin-top:4px">Reason: ${j.rejection_reason}</div>` : ''}
         </div>
-    `).join('');
+        <div>
+            <span class="badge badge-${j.status.toLowerCase()}">${j.status}</span>
+        </div>
+    </div>`;
+}
 
-    // Update map with historical confirmed/in-progress journeys
-    layerGroup.clearLayers();
-    js.journeys.forEach(j => {
-        if(j.status === "CONFIRMED" || j.status === "IN_PROGRESS") {
-            const org = [j.origin_lat, j.origin_lng];
-            const dst = [j.destination_lat, j.destination_lng];
-            const line = L.polyline([org, dst], {color: 'var(--primary)', weight: 3, opacity: 0.7, dashArray: '5,10'});
-            line.addTo(layerGroup);
-            L.circleMarker(org, {radius:6, color:'var(--success)', fillOpacity:1}).bindPopup(`Origin: ${j.origin}`).addTo(layerGroup);
-            L.circleMarker(dst, {radius:6, color:'var(--danger)', fillOpacity:1}).bindPopup(`Dest: ${j.destination}`).addTo(layerGroup);
+function appendJourneyToList(j) {
+    const list = document.getElementById('journey-list');
+    list.insertAdjacentHTML('afterbegin', renderJourneyItem(j));
+}
+
+async function loadJourneys() {
+    try {
+        const r = await authFetch('/api/journeys/');
+        if(!r.ok) {
+            console.error('Failed to load journeys:', r.status, r.statusText);
+            return;
         }
-    });
+        const js = await r.json();
+        const journeys = js.journeys || js || [];
+        const list = document.getElementById('journey-list');
+
+        if(journeys.length === 0) {
+            list.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:24px;">No journeys yet. Book one!</div>';
+        } else {
+            list.innerHTML = journeys.map(j => renderJourneyItem(j)).join('');
+        }
+
+        // Update map with confirmed/in-progress journeys
+        try {
+            layerGroup.clearLayers();
+            journeys.forEach(j => {
+                if((j.status === "CONFIRMED" || j.status === "IN_PROGRESS") && j.origin_lat) {
+                    const org = [j.origin_lat, j.origin_lng];
+                    const dst = [j.destination_lat, j.destination_lng];
+                    L.polyline([org, dst], {color: '#8a2be2', weight: 3, opacity: 0.7, dashArray: '5,10'}).addTo(layerGroup);
+                    L.circleMarker(org, {radius:6, color:'#00e676', fillOpacity:1}).bindPopup(`Origin: ${j.origin}`).addTo(layerGroup);
+                    L.circleMarker(dst, {radius:6, color:'#ff1744', fillOpacity:1}).bindPopup(`Dest: ${j.destination}`).addTo(layerGroup);
+                }
+            });
+        } catch(mapErr) {
+            console.warn('Map update failed:', mapErr);
+        }
+    } catch(err) {
+        console.error('loadJourneys error:', err);
+    }
 }
 
 async function loadDashboard() {
