@@ -60,7 +60,7 @@ class RoadSegmentCapacity(Base):
     grid_lng: Mapped[float] = mapped_column(Float, nullable=False)
     time_slot_start: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     time_slot_end: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    current_bookings: Mapped[int] = mapped_column(Integer, default=0)
+    current_bookings: Mapped[float] = mapped_column(Float, default=0.0)
     max_capacity: Mapped[int] = mapped_column(Integer, default=100)
 
     __table_args__ = (

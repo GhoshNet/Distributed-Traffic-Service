@@ -37,6 +37,7 @@ class Journey(Base):
     estimated_duration_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
     estimated_arrival_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     vehicle_registration: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    vehicle_type: Mapped[str] = mapped_column(String(20), default="CAR", nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="PENDING", index=True)
     rejection_reason: Mapped[str] = mapped_column(Text, nullable=True)
     idempotency_key: Mapped[str] = mapped_column(String(100), nullable=True, unique=True)

@@ -14,6 +14,7 @@ from .routes import router
 from shared.config import setup_logging
 from shared.schemas import HealthResponse
 from shared.messaging import get_broker, close_broker
+from shared.tracing import CorrelationIDMiddleware
 
 setup_logging("user-service")
 logger = logging.getLogger(__name__)
@@ -45,6 +46,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.add_middleware(CorrelationIDMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

@@ -34,6 +34,7 @@ func main() {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(corsMiddleware)
+	r.Use(correlationIdMiddleware)
 
 	r.Get("/health", healthHandler)
 	r.Get("/api/notifications/", notificationsHandler)
@@ -59,6 +60,19 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	srv.Shutdown(ctx)
+}
+
+func correlationIdMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqId := r.Header.Get("X-Request-ID")
+		if reqId == "" {
+			reqId = r.Header.Get("X-Correlation-ID")
+		}
+		if reqId != "" {
+			w.Header().Set("X-Correlation-ID", reqId)
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func corsMiddleware(next http.Handler) http.Handler {

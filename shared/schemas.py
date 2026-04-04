@@ -23,6 +23,28 @@ class JourneyStatus(str, Enum):
     COMPLETED = "COMPLETED"
 
 
+class UserRole(str, Enum):
+    DRIVER = "DRIVER"
+    ENFORCEMENT_AGENT = "ENFORCEMENT_AGENT"
+    ADMIN = "ADMIN"
+
+
+class VehicleType(str, Enum):
+    MOTORCYCLE = "MOTORCYCLE"
+    CAR = "CAR"
+    VAN = "VAN"
+    TRUCK = "TRUCK"
+    BUS = "BUS"
+
+
+class VehicleType(str, Enum):
+    MOTORCYCLE = "MOTORCYCLE"
+    CAR = "CAR"
+    VAN = "VAN"
+    TRUCK = "TRUCK"
+    BUS = "BUS"
+
+
 class ConflictType(str, Enum):
     TIME_OVERLAP = "TIME_OVERLAP"
     ROAD_CAPACITY = "ROAD_CAPACITY"
@@ -49,6 +71,7 @@ class UserRegisterRequest(BaseModel):
     password: str = Field(..., min_length=8, description="Password (min 8 chars)")
     full_name: str = Field(..., description="Full name of the driver")
     license_number: str = Field(..., description="Driving license number")
+    role: UserRole = Field(default=UserRole.DRIVER, description="User role")
 
 
 class UserLoginRequest(BaseModel):
@@ -61,6 +84,7 @@ class UserResponse(BaseModel):
     email: str
     full_name: str
     license_number: str
+    role: UserRole
     created_at: datetime
 
     class Config:
@@ -87,6 +111,7 @@ class JourneyCreateRequest(BaseModel):
     departure_time: datetime = Field(..., description="Planned departure time (UTC)")
     estimated_duration_minutes: int = Field(..., gt=0, le=1440, description="Estimated duration in minutes")
     vehicle_registration: str = Field(..., description="Vehicle registration plate")
+    vehicle_type: VehicleType = Field(default=VehicleType.CAR, description="Type of vehicle")
     idempotency_key: Optional[str] = Field(
         default=None,
         description="Client-generated idempotency key for safe retries"
@@ -106,6 +131,7 @@ class JourneyResponse(BaseModel):
     estimated_duration_minutes: int
     estimated_arrival_time: datetime
     vehicle_registration: str
+    vehicle_type: VehicleType
     status: JourneyStatus
     rejection_reason: Optional[str] = None
     created_at: datetime
@@ -136,6 +162,7 @@ class ConflictCheckRequest(BaseModel):
     departure_time: datetime
     estimated_duration_minutes: int
     vehicle_registration: str
+    vehicle_type: VehicleType = Field(default=VehicleType.CAR)
 
 
 class ConflictCheckResponse(BaseModel):

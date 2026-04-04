@@ -39,6 +39,8 @@ class EventLog(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False, index=True
     )
+    prev_hash: Mapped[str] = mapped_column(String(64), nullable=True)
+    event_hash: Mapped[str] = mapped_column(String(64), nullable=True)
 
     __table_args__ = (
         Index("idx_event_type_date", "event_type", "created_at"),

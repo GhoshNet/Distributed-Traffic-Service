@@ -12,8 +12,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from .database import init_db
 from .routes import router
 from shared.config import setup_logging
+import asyncio
 from shared.schemas import HealthResponse
 from shared.messaging import get_broker, close_broker
+from shared.tracing import CorrelationIDMiddleware
+from .scheduler import transition_journeys
 
 setup_logging("journey-service")
 logger = logging.getLogger(__name__)
@@ -28,6 +31,10 @@ async def lifespan(app: FastAPI):
     try:
         broker = await get_broker()
         logger.info("Connected to RabbitMQ")
+        
+        # Start the background task for journey lifecycle transitions
+        asyncio.create_task(transition_journeys())
+        logger.info("Journey lifecycle scheduler started")
     except Exception as e:
         logger.warning(f"Could not connect to RabbitMQ: {e}")
 
@@ -44,6 +51,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.add_middleware(CorrelationIDMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

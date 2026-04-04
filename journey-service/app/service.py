@@ -51,7 +51,8 @@ class JourneyService:
                 return await JourneyService.get_journey(db, record.journey_id, user_id)
 
         journey_id = str(uuid.uuid4())
-        estimated_arrival = request.departure_time + timedelta(
+        departure_naive = request.departure_time.replace(tzinfo=None)
+        estimated_arrival = departure_naive + timedelta(
             minutes=request.estimated_duration_minutes
         )
 
@@ -65,10 +66,11 @@ class JourneyService:
             origin_lng=request.origin_lng,
             destination_lat=request.destination_lat,
             destination_lng=request.destination_lng,
-            departure_time=request.departure_time,
+            departure_time=departure_naive,
             estimated_duration_minutes=request.estimated_duration_minutes,
             estimated_arrival_time=estimated_arrival,
             vehicle_registration=request.vehicle_registration,
+            vehicle_type=request.vehicle_type.value,
             status=JourneyStatus.PENDING.value,
             idempotency_key=request.idempotency_key,
         )
@@ -291,6 +293,7 @@ class JourneyService:
             estimated_duration_minutes=journey.estimated_duration_minutes,
             estimated_arrival_time=journey.estimated_arrival_time,
             vehicle_registration=journey.vehicle_registration,
+            vehicle_type=journey.vehicle_type,
             status=JourneyStatus(journey.status),
             rejection_reason=journey.rejection_reason,
             created_at=journey.created_at,

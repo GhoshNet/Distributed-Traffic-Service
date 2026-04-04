@@ -28,6 +28,8 @@ from shared.schemas import (
     EventType,
 )
 from shared.messaging import get_broker
+from shared.tracing import get_correlation_id
+from shared.circuit_breaker import get_circuit_breaker, CircuitBreakerOpenError
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +71,9 @@ class BookingSaga:
             # No conflict - confirm
             return JourneyStatus.CONFIRMED, None
 
+        except CircuitBreakerOpenError as e:
+            logger.warning(f"Saga aborted: {e}")
+            return JourneyStatus.REJECTED, "Conflict check service temporarily unavailable. Please retry later."
         except asyncio.TimeoutError:
             logger.error(f"Saga timeout for journey {journey.id}")
             return JourneyStatus.REJECTED, "Booking timed out. Please retry."
@@ -89,16 +94,23 @@ class BookingSaga:
             departure_time=journey.departure_time,
             estimated_duration_minutes=journey.estimated_duration_minutes,
             vehicle_registration=journey.vehicle_registration,
+            vehicle_type=journey.vehicle_type,
         )
 
-        try:
+        cb = get_circuit_breaker("conflict-service", failure_threshold=3, reset_timeout=30.0)
+
+        async def _make_request():
             async with httpx.AsyncClient(timeout=SAGA_TIMEOUT_SECONDS) as client:
                 response = await client.post(
                     f"{CONFLICT_SERVICE_URL}/api/conflicts/check",
                     json=request.model_dump(mode="json"),
+                    headers={"X-Correlation-ID": get_correlation_id()}
                 )
                 response.raise_for_status()
                 return ConflictCheckResponse(**response.json())
+
+        try:
+            return await cb.call(_make_request)
         except httpx.TimeoutException:
             logger.error("Conflict Detection Service timed out")
             return None

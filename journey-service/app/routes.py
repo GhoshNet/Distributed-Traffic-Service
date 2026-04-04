@@ -6,10 +6,11 @@ import logging
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func
 
-from .database import get_db
+from .database import get_db, Journey
 from .service import JourneyService
-from shared.auth import get_current_user
+from shared.auth import get_current_user, require_role
 from shared.schemas import (
     JourneyCreateRequest,
     JourneyResponse,
@@ -55,6 +56,36 @@ async def list_journeys(
     """List all journeys for the current user."""
     return await JourneyService.list_journeys(
         db, current_user["user_id"], status, page, page_size
+    )
+
+@router.get(
+    "/all",
+    response_model=JourneyListResponse,
+    dependencies=[Depends(require_role("ADMIN"))],
+)
+async def list_all_journeys(
+    status: Optional[str] = Query(None, description="Filter by status"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin-only: list all journeys from all users."""
+    query = select(Journey)
+    if status:
+        query = query.where(Journey.status == status)
+
+    count_query = select(func.count()).select_from(query.subquery())
+    total = (await db.execute(count_query)).scalar()
+
+    query = query.order_by(Journey.departure_time.desc()).offset((page - 1) * page_size).limit(page_size)
+    result = await db.execute(query)
+    journeys = result.scalars().all()
+
+    return JourneyListResponse(
+        journeys=[JourneyService._to_response(j) for j in journeys],
+        total=total,
+        page=page,
+        page_size=page_size,
     )
 
 

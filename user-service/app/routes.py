@@ -30,6 +30,26 @@ router = APIRouter(prefix="/api/users", tags=["Users"])
 async def register(request: UserRegisterRequest, db: AsyncSession = Depends(get_db)):
     """Register a new driver account."""
     try:
+        from shared.schemas import UserRole
+        # Ensure default registrations are only DRIVERs
+        if request.role != UserRole.DRIVER:
+            request.role = UserRole.DRIVER
+        return await UserService.register(db, request)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@router.post(
+    "/register/agent",
+    response_model=UserResponse,
+    status_code=201,
+    responses={400: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+)
+async def register_agent(request: UserRegisterRequest, db: AsyncSession = Depends(get_db)):
+    """Register a new enforcement agent account."""
+    try:
+        from shared.schemas import UserRole
+        request.role = UserRole.ENFORCEMENT_AGENT
         return await UserService.register(db, request)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))

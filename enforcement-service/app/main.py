@@ -6,13 +6,15 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 
 from .service import EnforcementService
 from shared.config import setup_logging
 from shared.schemas import HealthResponse, VerificationResponse, ErrorResponse
 from shared.messaging import get_broker, close_broker
+from shared.tracing import CorrelationIDMiddleware
+from shared.auth import require_role
 
 setup_logging("enforcement-service")
 logger = logging.getLogger(__name__)
@@ -41,6 +43,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.add_middleware(CorrelationIDMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -62,6 +65,7 @@ async def health_check():
 @app.get(
     "/api/enforcement/verify/vehicle/{vehicle_registration}",
     response_model=VerificationResponse,
+    dependencies=[Depends(require_role("ENFORCEMENT_AGENT"))],
 )
 async def verify_vehicle(vehicle_registration: str):
     """
@@ -74,6 +78,7 @@ async def verify_vehicle(vehicle_registration: str):
 @app.get(
     "/api/enforcement/verify/license/{license_number}",
     response_model=VerificationResponse,
+    dependencies=[Depends(require_role("ENFORCEMENT_AGENT"))],
 )
 async def verify_license(license_number: str):
     """

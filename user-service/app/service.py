@@ -50,6 +50,7 @@ class UserService:
             password_hash=pwd_context.hash(request.password),
             full_name=request.full_name,
             license_number=request.license_number,
+            role=request.role.value,
         )
 
         db.add(user)
@@ -63,6 +64,7 @@ class UserService:
             email=user.email,
             full_name=user.full_name,
             license_number=user.license_number,
+            role=user.role,
             created_at=user.created_at,
         )
 
@@ -84,6 +86,7 @@ class UserService:
             user_id=user.id,
             email=user.email,
             license_number=user.license_number,
+            role=user.role,
         )
 
         logger.info(f"User logged in: {user.id}")
@@ -108,6 +111,7 @@ class UserService:
             email=user.email,
             full_name=user.full_name,
             license_number=user.license_number,
+            role=user.role,
             created_at=user.created_at,
         )
 
@@ -127,5 +131,6 @@ class UserService:
             email=user.email,
             full_name=user.full_name,
             license_number=user.license_number,
+            role=user.role,
             created_at=user.created_at,
         )
