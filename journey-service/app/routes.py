@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
-from .database import get_db, Journey
+from .database import get_db, get_read_db, Journey
 from .service import JourneyService
 from shared.auth import get_current_user, require_role
 from shared.schemas import (
@@ -51,7 +51,7 @@ async def list_journeys(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     current_user: dict = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_read_db),
 ):
     """List all journeys for the current user."""
     return await JourneyService.list_journeys(
@@ -67,7 +67,7 @@ async def list_all_journeys(
     status: Optional[str] = Query(None, description="Filter by status"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_read_db),
 ):
     """Admin-only: list all journeys from all users."""
     query = select(Journey)
@@ -125,13 +125,56 @@ async def cancel_journey(
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.get("/points/balance")
+async def get_points_balance(
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get the current driver's points balance."""
+    from .points import PointsService
+    return await PointsService.get_balance(db, current_user["user_id"])
+
+
+@router.get("/points/history")
+async def get_points_history(
+    limit: int = Query(20, ge=1, le=100),
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get the current driver's points transaction history."""
+    from .points import PointsService
+    transactions = await PointsService.get_transaction_history(
+        db, current_user["user_id"], limit
+    )
+    return {"transactions": transactions, "count": len(transactions)}
+
+
+@router.post("/points/spend")
+async def spend_points(
+    amount: int = Query(..., gt=0, description="Points to spend"),
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Spend points (e.g. for priority booking).
+    Uses SELECT FOR UPDATE to prevent double-spending.
+    """
+    from .points import PointsService
+    try:
+        return await PointsService.spend_points(
+            db, current_user["user_id"], amount, "MANUAL_SPEND"
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.get(
     "/vehicle/{vehicle_registration}/active",
     response_model=list[JourneyResponse],
 )
 async def get_active_vehicle_journeys(
     vehicle_registration: str,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_read_db),
 ):
     """Get active journeys for a vehicle (used by enforcement service)."""
     return await JourneyService.get_active_journeys_for_vehicle(
@@ -145,7 +188,7 @@ async def get_active_vehicle_journeys(
 )
 async def get_active_user_journeys(
     user_id: str,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_read_db),
 ):
     """Get active journeys for a user (used by enforcement service for license lookup)."""
     return await JourneyService.get_active_journeys_for_user(

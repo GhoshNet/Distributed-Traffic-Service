@@ -70,6 +70,44 @@ services:
     networks:
       - journey-net
 
+  redis-replica:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru --replicaof redis 6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - journey-net
+
+  redis-sentinel:
+    image: redis:7-alpine
+    command: >
+      sh -c "
+      cat > /tmp/sentinel.conf <<EOF
+      sentinel monitor mymaster redis 6379 1
+      sentinel down-after-milliseconds mymaster 5000
+      sentinel failover-timeout mymaster 10000
+      sentinel parallel-syncs mymaster 1
+      EOF
+      redis-sentinel /tmp/sentinel.conf
+      "
+    ports:
+      - "26379:26379"
+    depends_on:
+      redis:
+        condition: service_healthy
+      redis-replica:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - journey-net
+
   # ==========================================
   # Databases (one per service)
   # ==========================================
@@ -99,11 +137,46 @@ services:
       POSTGRES_PASSWORD: journeys_pass
     volumes:
       - pg_journeys_data:/var/lib/postgresql/data
+    command: >
+      postgres
+        -c wal_level=replica
+        -c max_wal_senders=3
+        -c max_replication_slots=3
+        -c hot_standby=on
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U journeys_user -d journeys_db" ]
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
+    networks:
+      - journey-net
+
+  postgres-journeys-replica:
+    image: postgres:16-alpine
+    environment:
+      PGUSER: journeys_user
+      PGPASSWORD: journeys_pass
+    volumes:
+      - pg_journeys_replica_data:/var/lib/postgresql/data
+    entrypoint: |
+      bash -c "
+      if [ ! -f /var/lib/postgresql/data/PG_VERSION ]; then
+        echo 'Initializing replica from primary...'
+        until pg_isready -h postgres-journeys -U journeys_user -d journeys_db; do sleep 2; done
+        pg_basebackup -h postgres-journeys -U journeys_user -D /var/lib/postgresql/data -Fp -Xs -P -R
+      fi
+      exec postgres -c hot_standby=on
+      "
+    depends_on:
+      postgres-journeys:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U journeys_user -d journeys_db" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     restart: unless-stopped
     networks:
       - journey-net
@@ -183,6 +256,7 @@ services:
       - "8002:8000"
     environment:
       DATABASE_URL: postgresql+asyncpg://journeys_user:journeys_pass@postgres-journeys:5432/journeys_db
+      DATABASE_READ_URL: postgresql+asyncpg://journeys_user:journeys_pass@postgres-journeys-replica:5432/journeys_db
       REDIS_URL: redis://redis:6379/1
       RABBITMQ_URL: amqp://journey_admin:journey_pass@rabbitmq:5672/journey_vhost
       CONFLICT_SERVICE_URL: http://conflict-service:8000
@@ -322,6 +396,7 @@ volumes:
   redis_data:
   pg_users_data:
   pg_journeys_data:
+  pg_journeys_replica_data:
   pg_conflicts_data:
   pg_analytics_data:
 

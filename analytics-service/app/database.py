@@ -16,7 +16,13 @@ DATABASE_URL = os.getenv(
     "postgresql+asyncpg://analytics_user:analytics_pass@localhost:5432/analytics_db",
 )
 
-engine = create_async_engine(DATABASE_URL, echo=False, pool_size=20, max_overflow=10)
+# Isolation level: READ COMMITTED — analytics is append-only (event logging).
+# No concurrent modifications to the same row, so READ COMMITTED is sufficient.
+# The HMAC audit chain provides integrity guarantees at the application level.
+engine = create_async_engine(
+    DATABASE_URL, echo=False, pool_size=20, max_overflow=10,
+    execution_options={"isolation_level": "READ COMMITTED"},
+)
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 

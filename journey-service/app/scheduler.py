@@ -67,5 +67,15 @@ async def _run_transitions():
             logger.info(f"Transitioning journey {j.id} to COMPLETED")
             await BookingSaga.publish_journey_event(j, EventType.JOURNEY_COMPLETED)
 
+            # Award points for completing a journey
+            try:
+                from .points import PointsService, POINTS_PER_COMPLETED_JOURNEY
+                await PointsService.earn_points(
+                    db, j.user_id, POINTS_PER_COMPLETED_JOURNEY,
+                    "JOURNEY_COMPLETED", j.id
+                )
+            except Exception as e:
+                logger.warning(f"Failed to award completion points for {j.id}: {e}")
+
         if to_start or to_complete:
             await db.commit()

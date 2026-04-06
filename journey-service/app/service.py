@@ -100,6 +100,17 @@ class JourneyService:
 
         logger.info(f"Journey {journey_id} final status: {final_status.value}")
 
+        # Award points for confirmed bookings (immediate access)
+        if final_status == JourneyStatus.CONFIRMED:
+            try:
+                from .points import PointsService, POINTS_PER_BOOKING
+                await PointsService.earn_points(
+                    db, user_id, POINTS_PER_BOOKING,
+                    "BOOKING_CONFIRMED", journey_id
+                )
+            except Exception as e:
+                logger.warning(f"Failed to award booking points: {e}")
+
         return JourneyService._to_response(journey)
 
     @staticmethod
@@ -172,6 +183,16 @@ class JourneyService:
         await BookingSaga.save_outbox_event(db, journey, EventType.JOURNEY_CANCELLED)
         await db.commit()
         await db.refresh(journey)
+
+        # Deduct points for cancellation
+        try:
+            from .points import PointsService, POINTS_DEDUCTED_LATE_CANCEL
+            await PointsService.spend_points(
+                db, user_id, POINTS_DEDUCTED_LATE_CANCEL,
+                "LATE_CANCELLATION", journey_id
+            )
+        except Exception as e:
+            logger.warning(f"Could not deduct cancellation points: {e}")
 
         logger.info(f"Journey {journey_id} cancelled by user {user_id}")
         return JourneyService._to_response(journey)

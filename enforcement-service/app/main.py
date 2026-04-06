@@ -15,9 +15,15 @@ from shared.schemas import HealthResponse, VerificationResponse, ErrorResponse
 from shared.messaging import get_broker, close_broker
 from shared.tracing import CorrelationIDMiddleware
 from shared.auth import require_role
+from shared.partition import (
+    PartitionManager, make_redis_probe,
+    make_rabbitmq_probe, make_http_probe,
+)
 
 setup_logging("enforcement-service")
 logger = logging.getLogger(__name__)
+
+partition_mgr = PartitionManager("enforcement-service")
 
 
 @asynccontextmanager
@@ -35,9 +41,22 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Could not connect to RabbitMQ: {e}")
 
+    # Register dependencies for partition detection
+    import os
+    from .service import redis_client
+    partition_mgr.register_dependency("redis", make_redis_probe(redis_client))
+    partition_mgr.register_dependency("rabbitmq", make_rabbitmq_probe(get_broker))
+    partition_mgr.register_dependency(
+        "journey-service",
+        make_http_probe(os.getenv("JOURNEY_SERVICE_URL", "http://journey-service:8000") + "/health"),
+    )
+    await partition_mgr.start()
+    logger.info("Partition manager started")
+
     yield
 
     logger.info("Enforcement Service shutting down...")
+    await partition_mgr.stop()
     await close_broker()
 
 
@@ -76,8 +95,17 @@ async def verify_vehicle(vehicle_registration: str):
     """
     Verify if a vehicle has a valid active journey booking.
     Optimized for speed (< 500ms p95) using Redis-first lookup.
+    During network partitions, returns cached data with a staleness warning.
     """
-    return await EnforcementService.verify_by_vehicle(vehicle_registration)
+    from starlette.responses import JSONResponse
+    result = await EnforcementService.verify_by_vehicle(vehicle_registration)
+    # If Journey Service is partitioned, flag response as potentially stale
+    if partition_mgr.is_partitioned("journey-service"):
+        response = JSONResponse(content=result.model_dump(mode="json"))
+        response.headers["X-Data-Staleness"] = "STALE"
+        response.headers["X-Partition-Status"] = "journey-service:PARTITIONED"
+        return response
+    return result
 
 
 @app.get(
@@ -90,4 +118,17 @@ async def verify_license(license_number: str):
     Verify if a driver (by license number) has a valid active journey booking.
     Falls back to User Service + Journey Service if not cached.
     """
-    return await EnforcementService.verify_by_license(license_number)
+    result = await EnforcementService.verify_by_license(license_number)
+    if partition_mgr.is_partitioned("journey-service"):
+        from starlette.responses import JSONResponse
+        response = JSONResponse(content=result.model_dump(mode="json"))
+        response.headers["X-Data-Staleness"] = "STALE"
+        response.headers["X-Partition-Status"] = "journey-service:PARTITIONED"
+        return response
+    return result
+
+
+@app.get("/health/partitions")
+async def partition_status():
+    """Check partition status for all dependencies."""
+    return partition_mgr.get_status()

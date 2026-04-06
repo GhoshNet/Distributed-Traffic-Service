@@ -96,6 +96,10 @@
       <div id="view-dash" class="view">
         <div class="g4">
           <div class="card">
+            <div class="stat-label">Your Points Balance</div>
+            <div class="stat-value" id="stat-points" style="color:var(--secondary)">0</div>
+          </div>
+          <div class="card">
             <div class="stat-label">Total Events Today</div>
             <div class="stat-value" id="stat-total">0</div>
           </div>
@@ -107,6 +111,10 @@
             <div class="stat-label">Rejected Journeys</div>
             <div class="stat-value" id="stat-rej" style="color:var(--danger)">0</div>
           </div>
+        </div>
+        <div class="card" style="margin-top:20px">
+          <div class="card-title">Points History</div>
+          <div id="points-history" class="item-list"></div>
         </div>
       </div>
 

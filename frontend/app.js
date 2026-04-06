@@ -241,12 +241,50 @@ async function loadJourneys() {
 }
 
 async function loadDashboard() {
+    // Load analytics stats
     const r = await authFetch('/api/analytics/stats');
-    if(!r.ok) return;
-    const s = await r.json();
-    document.getElementById('stat-total').innerText = s.total_events_today || 0;
-    document.getElementById('stat-conf').innerText = s.confirmed_today || 0;
-    document.getElementById('stat-rej').innerText = s.rejected_today || 0;
+    if(r.ok) {
+        const s = await r.json();
+        document.getElementById('stat-total').innerText = s.total_events_today || 0;
+        document.getElementById('stat-conf').innerText = s.confirmed_today || 0;
+        document.getElementById('stat-rej').innerText = s.rejected_today || 0;
+    }
+
+    // Load points balance
+    try {
+        const pr = await authFetch('/api/journeys/points/balance');
+        if(pr.ok) {
+            const pts = await pr.json();
+            document.getElementById('stat-points').innerText = pts.balance || 0;
+        }
+    } catch(e) { console.warn('Points fetch failed:', e); }
+
+    // Load points history
+    try {
+        const hr = await authFetch('/api/journeys/points/history?limit=10');
+        if(hr.ok) {
+            const data = await hr.json();
+            const list = document.getElementById('points-history');
+            if(data.transactions && data.transactions.length > 0) {
+                list.innerHTML = data.transactions.map(t => {
+                    const isPositive = t.amount > 0;
+                    const color = isPositive ? 'var(--success)' : 'var(--danger)';
+                    const sign = isPositive ? '+' : '';
+                    const reasonLabel = t.reason.replace(/_/g, ' ');
+                    const date = t.created_at ? new Date(t.created_at).toLocaleString() : '';
+                    return `<div class="data-item">
+                        <div>
+                            <div style="font-weight:600;font-size:14px">${reasonLabel}</div>
+                            <div style="font-size:12px;color:var(--text-muted)">${date}</div>
+                        </div>
+                        <div style="font-weight:700;font-size:16px;color:${color}">${sign}${t.amount}</div>
+                    </div>`;
+                }).join('');
+            } else {
+                list.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:16px;">No points history yet.</div>';
+            }
+        }
+    } catch(e) { console.warn('Points history fetch failed:', e); }
 }
 
 // Toast notification system

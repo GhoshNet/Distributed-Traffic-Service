@@ -14,7 +14,12 @@ DATABASE_URL = os.getenv(
     "postgresql+asyncpg://users_user:users_pass@localhost:5432/users_db",
 )
 
-engine = create_async_engine(DATABASE_URL, echo=False, pool_size=20, max_overflow=10)
+# Isolation level: READ COMMITTED — sufficient for user registration
+# because unique constraints on email/license prevent duplicates at the DB level.
+engine = create_async_engine(
+    DATABASE_URL, echo=False, pool_size=20, max_overflow=10,
+    execution_options={"isolation_level": "READ COMMITTED"},
+)
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
