@@ -1,0 +1,629 @@
+version: '3.8'
+services:
+  frontend:
+    image: nginx:1.25-alpine
+    ports:
+    - 3000:80
+    volumes:
+    - ./frontend:/usr/share/nginx/html:ro
+    restart: unless-stopped
+    networks:
+    - journey-net
+  haproxy:
+    image: haproxy:2.8-alpine
+    ports:
+    - 8080:8080
+    volumes:
+    - ./api-gateway/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    depends_on:
+    - api-gateway-1
+    - api-gateway-2
+    networks:
+    - journey-net
+    deploy:
+      replicas: 2
+  api-gateway-1:
+    image: nginx:1.25-alpine
+    volumes:
+    - ./api-gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      user-service:
+        condition: service_healthy
+      journey-service:
+        condition: service_healthy
+      enforcement-service:
+        condition: service_healthy
+      analytics-service:
+        condition: service_healthy
+    networks:
+    - journey-net
+    deploy:
+      replicas: 2
+  api-gateway-2:
+    image: nginx:1.25-alpine
+    volumes:
+    - ./api-gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      user-service:
+        condition: service_healthy
+      journey-service:
+        condition: service_healthy
+      enforcement-service:
+        condition: service_healthy
+      analytics-service:
+        condition: service_healthy
+    networks:
+    - journey-net
+    deploy:
+      replicas: 2
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    ports:
+    - 5672:5672
+    - 15672:15672
+    environment:
+      RABBITMQ_ERLANG_COOKIE: journey_cluster_cookie
+      RABBITMQ_DEFAULT_USER: journey_admin
+      RABBITMQ_DEFAULT_PASS: journey_pass
+      RABBITMQ_DEFAULT_VHOST: journey_vhost
+    volumes:
+    - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test:
+      - CMD
+      - rabbitmq-diagnostics
+      - -q
+      - ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+    - journey-net
+  rabbitmq-2:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_ERLANG_COOKIE: journey_cluster_cookie
+      RABBITMQ_DEFAULT_USER: journey_admin
+      RABBITMQ_DEFAULT_PASS: journey_pass
+      RABBITMQ_DEFAULT_VHOST: journey_vhost
+      RABBITMQ_NODENAME: rabbit@rabbitmq-2
+    volumes:
+    - rabbitmq_data_2:/var/lib/rabbitmq
+    command: 'sh -c " rabbitmq-server -detached && sleep 10 && rabbitmqctl stop_app
+      && rabbitmqctl join_cluster rabbit@rabbitmq && rabbitmqctl start_app && sleep
+      infinity "
+
+      '
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test:
+      - CMD
+      - rabbitmq-diagnostics
+      - -q
+      - ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+    - journey-net
+  rabbitmq-3:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_ERLANG_COOKIE: journey_cluster_cookie
+      RABBITMQ_DEFAULT_USER: journey_admin
+      RABBITMQ_DEFAULT_PASS: journey_pass
+      RABBITMQ_DEFAULT_VHOST: journey_vhost
+      RABBITMQ_NODENAME: rabbit@rabbitmq-3
+    volumes:
+    - rabbitmq_data_3:/var/lib/rabbitmq
+    command: 'sh -c " rabbitmq-server -detached && sleep 15 && rabbitmqctl stop_app
+      && rabbitmqctl join_cluster rabbit@rabbitmq && rabbitmqctl start_app && sleep
+      infinity "
+
+      '
+    depends_on:
+      rabbitmq-2:
+        condition: service_healthy
+    healthcheck:
+      test:
+      - CMD
+      - rabbitmq-diagnostics
+      - -q
+      - ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+    - journey-net
+  redis:
+    image: redis:7-alpine
+    ports:
+    - 6379:6379
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+    - redis_data:/data
+    healthcheck:
+      test:
+      - CMD
+      - redis-cli
+      - ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+    - journey-net
+  redis-replica:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+      --replicaof redis 6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+      - CMD
+      - redis-cli
+      - ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+    - journey-net
+  redis-sentinel:
+    image: redis:7-alpine
+    command: 'sh -c " cat > /tmp/sentinel.conf <<EOF sentinel monitor mymaster redis
+      6379 2 sentinel down-after-milliseconds mymaster 5000 sentinel failover-timeout
+      mymaster 10000 sentinel parallel-syncs mymaster 1 EOF redis-sentinel /tmp/sentinel.conf
+      "
+
+      '
+    ports:
+    - 26379:26379
+    depends_on:
+      redis:
+        condition: service_healthy
+      redis-replica:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+    - journey-net
+  redis-sentinel-2:
+    image: redis:7-alpine
+    command: 'sh -c " cat > /tmp/sentinel.conf <<EOF sentinel monitor mymaster redis
+      6379 2 sentinel down-after-milliseconds mymaster 5000 sentinel failover-timeout
+      mymaster 10000 sentinel parallel-syncs mymaster 1 EOF redis-sentinel /tmp/sentinel.conf
+      "
+
+      '
+    depends_on:
+      redis:
+        condition: service_healthy
+      redis-replica:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+    - journey-net
+  redis-sentinel-3:
+    image: redis:7-alpine
+    command: 'sh -c " cat > /tmp/sentinel.conf <<EOF sentinel monitor mymaster redis
+      6379 2 sentinel down-after-milliseconds mymaster 5000 sentinel failover-timeout
+      mymaster 10000 sentinel parallel-syncs mymaster 1 EOF redis-sentinel /tmp/sentinel.conf
+      "
+
+      '
+    depends_on:
+      redis:
+        condition: service_healthy
+      redis-replica:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+    - journey-net
+  postgres-users:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: users_db
+      POSTGRES_USER: users_user
+      POSTGRES_PASSWORD: users_pass
+    volumes:
+    - pg_users_data:/var/lib/postgresql/data
+    command: "postgres\n  -c wal_level=replica\n  -c max_wal_senders=3\n  -c max_replication_slots=3\n\
+      \  -c hot_standby=on\n"
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pg_isready -U users_user -d users_db
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+    - journey-net
+  postgres-users-replica:
+    image: postgres:16-alpine
+    environment:
+      PGUSER: users_user
+      PGPASSWORD: users_pass
+    volumes:
+    - pg_users_replica_data:/var/lib/postgresql/data
+    entrypoint: "bash -c \"\nif [ ! -f /var/lib/postgresql/data/PG_VERSION ]; then\n\
+      \  echo 'Initializing replica from primary...'\n  until pg_isready -h postgres-users\
+      \ -U users_user -d users_db; do sleep 2; done\n  pg_basebackup -h postgres-users\
+      \ -U users_user -D /var/lib/postgresql/data -Fp -Xs -P -R\nfi\nexec postgres\
+      \ -c hot_standby=on\n\"\n"
+    depends_on:
+      postgres-users:
+        condition: service_healthy
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pg_isready -U users_user -d users_db
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+    - journey-net
+  postgres-journeys:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: journeys_db
+      POSTGRES_USER: journeys_user
+      POSTGRES_PASSWORD: journeys_pass
+    volumes:
+    - pg_journeys_data:/var/lib/postgresql/data
+    command: "postgres\n  -c wal_level=replica\n  -c max_wal_senders=3\n  -c max_replication_slots=3\n\
+      \  -c hot_standby=on\n"
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pg_isready -U journeys_user -d journeys_db
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+    - journey-net
+  postgres-journeys-replica:
+    image: postgres:16-alpine
+    environment:
+      PGUSER: journeys_user
+      PGPASSWORD: journeys_pass
+    volumes:
+    - pg_journeys_replica_data:/var/lib/postgresql/data
+    entrypoint: "bash -c \"\nif [ ! -f /var/lib/postgresql/data/PG_VERSION ]; then\n\
+      \  echo 'Initializing replica from primary...'\n  until pg_isready -h postgres-journeys\
+      \ -U journeys_user -d journeys_db; do sleep 2; done\n  pg_basebackup -h postgres-journeys\
+      \ -U journeys_user -D /var/lib/postgresql/data -Fp -Xs -P -R\nfi\nexec postgres\
+      \ -c hot_standby=on\n\"\n"
+    depends_on:
+      postgres-journeys:
+        condition: service_healthy
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pg_isready -U journeys_user -d journeys_db
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+    - journey-net
+  postgres-conflicts:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: conflicts_db
+      POSTGRES_USER: conflicts_user
+      POSTGRES_PASSWORD: conflicts_pass
+    volumes:
+    - pg_conflicts_data:/var/lib/postgresql/data
+    command: "postgres\n  -c wal_level=replica\n  -c max_wal_senders=3\n  -c max_replication_slots=3\n\
+      \  -c hot_standby=on\n"
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pg_isready -U conflicts_user -d conflicts_db
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+    - journey-net
+  postgres-conflicts-replica:
+    image: postgres:16-alpine
+    environment:
+      PGUSER: conflicts_user
+      PGPASSWORD: conflicts_pass
+    volumes:
+    - pg_conflicts_replica_data:/var/lib/postgresql/data
+    entrypoint: "bash -c \"\nif [ ! -f /var/lib/postgresql/data/PG_VERSION ]; then\n\
+      \  echo 'Initializing replica from primary...'\n  until pg_isready -h postgres-conflicts\
+      \ -U conflicts_user -d conflicts_db; do sleep 2; done\n  pg_basebackup -h postgres-conflicts\
+      \ -U conflicts_user -D /var/lib/postgresql/data -Fp -Xs -P -R\nfi\nexec postgres\
+      \ -c hot_standby=on\n\"\n"
+    depends_on:
+      postgres-conflicts:
+        condition: service_healthy
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pg_isready -U conflicts_user -d conflicts_db
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+    - journey-net
+  postgres-analytics:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: analytics_db
+      POSTGRES_USER: analytics_user
+      POSTGRES_PASSWORD: analytics_pass
+    volumes:
+    - pg_analytics_data:/var/lib/postgresql/data
+    command: "postgres\n  -c wal_level=replica\n  -c max_wal_senders=3\n  -c max_replication_slots=3\n\
+      \  -c hot_standby=on\n"
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pg_isready -U analytics_user -d analytics_db
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+    - journey-net
+  postgres-analytics-replica:
+    image: postgres:16-alpine
+    environment:
+      PGUSER: analytics_user
+      PGPASSWORD: analytics_pass
+    volumes:
+    - pg_analytics_replica_data:/var/lib/postgresql/data
+    entrypoint: "bash -c \"\nif [ ! -f /var/lib/postgresql/data/PG_VERSION ]; then\n\
+      \  echo 'Initializing replica from primary...'\n  until pg_isready -h postgres-analytics\
+      \ -U analytics_user -d analytics_db; do sleep 2; done\n  pg_basebackup -h postgres-analytics\
+      \ -U analytics_user -D /var/lib/postgresql/data -Fp -Xs -P -R\nfi\nexec postgres\
+      \ -c hot_standby=on\n\"\n"
+    depends_on:
+      postgres-analytics:
+        condition: service_healthy
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pg_isready -U analytics_user -d analytics_db
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+    - journey-net
+  user-service:
+    ports:
+    - 8001:8000
+    environment:
+      DATABASE_URL: postgresql+asyncpg://users_user:users_pass@postgres-users:5432/users_db
+      DATABASE_READ_URL: postgresql+asyncpg://users_user:users_pass@postgres-users-replica:5432/users_db
+      REDIS_URL: redis://redis:6379/0
+      RABBITMQ_URL: amqp://journey_admin:journey_pass@rabbitmq:5672/journey_vhost
+      JWT_SECRET: keefkfwjNBEFINoodwoedibIOEJFKWNFIjjjdIIIOOP
+      SERVICE_NAME: user-service
+    depends_on:
+      postgres-users:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://localhost:8000/health')
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+    - journey-net
+    image: 127.0.0.1:5000/user-service:latest
+    deploy:
+      replicas: 2
+  journey-service:
+    ports:
+    - 8002:8000
+    environment:
+      DATABASE_URL: postgresql+asyncpg://journeys_user:journeys_pass@postgres-journeys:5432/journeys_db
+      DATABASE_READ_URL: postgresql+asyncpg://journeys_user:journeys_pass@postgres-journeys-replica:5432/journeys_db
+      REDIS_URL: redis://redis:6379/1
+      RABBITMQ_URL: amqp://journey_admin:journey_pass@rabbitmq:5672/journey_vhost
+      CONFLICT_SERVICE_URL: http://conflict-service:8000
+      JWT_SECRET: keefkfwjNBEFINoodwoedibIOEJFKWNFIjjjdIIIOOP
+      SERVICE_NAME: journey-service
+    depends_on:
+      postgres-journeys:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://localhost:8000/health')
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+    - journey-net
+    image: 127.0.0.1:5000/journey-service:latest
+    deploy:
+      replicas: 2
+  conflict-service:
+    ports:
+    - 8003:8000
+    environment:
+      DATABASE_URL: postgresql+asyncpg://conflicts_user:conflicts_pass@postgres-conflicts:5432/conflicts_db
+      REDIS_URL: redis://redis:6379/2
+      RABBITMQ_URL: amqp://journey_admin:journey_pass@rabbitmq:5672/journey_vhost
+      JWT_SECRET: keefkfwjNBEFINoodwoedibIOEJFKWNFIjjjdIIIOOP
+      SERVICE_NAME: conflict-service
+    depends_on:
+      postgres-conflicts:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://localhost:8000/health')
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+    - journey-net
+    image: 127.0.0.1:5000/conflict-service:latest
+    deploy:
+      replicas: 2
+  notification-service:
+    ports:
+    - 8004:8000
+    environment:
+      REDIS_URL: redis://redis:6379/3
+      RABBITMQ_URL: amqp://journey_admin:journey_pass@rabbitmq:5672/journey_vhost
+      JWT_SECRET: keefkfwjNBEFINoodwoedibIOEJFKWNFIjjjdIIIOOP
+      SERVICE_NAME: notification-service
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test:
+      - CMD
+      - wget
+      - --quiet
+      - --tries=1
+      - --spider
+      - http://localhost:8000/health
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+    - journey-net
+    image: 127.0.0.1:5000/notification-service:latest
+    deploy:
+      replicas: 2
+  enforcement-service:
+    ports:
+    - 8005:8000
+    environment:
+      REDIS_URL: redis://redis:6379/4
+      RABBITMQ_URL: amqp://journey_admin:journey_pass@rabbitmq:5672/journey_vhost
+      JOURNEY_SERVICE_URL: http://journey-service:8000
+      JWT_SECRET: keefkfwjNBEFINoodwoedibIOEJFKWNFIjjjdIIIOOP
+      SERVICE_NAME: enforcement-service
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://localhost:8000/health')
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+    - journey-net
+    image: 127.0.0.1:5000/enforcement-service:latest
+    deploy:
+      replicas: 2
+  analytics-service:
+    ports:
+    - 8006:8000
+    environment:
+      DATABASE_URL: postgresql+asyncpg://analytics_user:analytics_pass@postgres-analytics:5432/analytics_db
+      DATABASE_READ_URL: postgresql+asyncpg://analytics_user:analytics_pass@postgres-analytics-replica:5432/analytics_db
+      REDIS_URL: redis://redis:6379/5
+      RABBITMQ_URL: amqp://journey_admin:journey_pass@rabbitmq:5672/journey_vhost
+      JWT_SECRET: keefkfwjNBEFINoodwoedibIOEJFKWNFIjjjdIIIOOP
+      AUDIT_HMAC_SECRET: auditChain9X2mPlQ7vRz4KdW8sFnE3bY
+      SERVICE_NAME: analytics-service
+    depends_on:
+      postgres-analytics:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://localhost:8000/health')
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+    - journey-net
+    image: 127.0.0.1:5000/analytics-service:latest
+    deploy:
+      replicas: 2
+  registry:
+    image: registry:2
+    ports:
+    - 5000:5000
+    volumes:
+    - registry_data:/var/lib/registry
+    networks:
+    - journey-net
+    deploy:
+      placement:
+        constraints:
+        - node.role == manager
+volumes:
+  rabbitmq_data: null
+  rabbitmq_data_2: null
+  rabbitmq_data_3: null
+  redis_data: null
+  pg_users_data: null
+  pg_users_replica_data: null
+  pg_journeys_data: null
+  pg_journeys_replica_data: null
+  pg_conflicts_data: null
+  pg_conflicts_replica_data: null
+  pg_analytics_data: null
+  pg_analytics_replica_data: null
+  registry_data: null
+networks:
+  journey-net:
+    driver: overlay

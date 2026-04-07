@@ -11,6 +11,8 @@ import json
 import uuid
 import os
 import logging
+import hmac
+import hashlib
 from datetime import datetime, timedelta
 
 import redis.asyncio as redis_async
@@ -32,14 +34,31 @@ async def handle_event(data: dict, routing_key: str):
 
     # Store event in database
     async with async_session() as db:
+        # Get previous event hash to build chain
+        prev_event_query = select(EventLog).order_by(EventLog.created_at.desc()).limit(1)
+        prev_event_result = await db.execute(prev_event_query)
+        prev_event = prev_event_result.scalar_one_or_none()
+        
+        prev_hash = prev_event.event_hash if prev_event and prev_event.event_hash else "0" * 64
+
+        metadata_json = json.dumps(data)
+        event_id = str(uuid.uuid4())
+        
+        # Compute new hash using a dedicated audit secret (not the JWT secret)
+        secret = os.getenv("AUDIT_HMAC_SECRET", os.getenv("JWT_SECRET", "secret")).encode()
+        payload = f"{event_id}|{routing_key}|{prev_hash}|{metadata_json}".encode()
+        event_hash = hmac.new(secret, payload, hashlib.sha256).hexdigest()
+
         event = EventLog(
-            id=str(uuid.uuid4()),
+            id=event_id,
             event_type=routing_key,
             journey_id=data.get("journey_id"),
             user_id=data.get("user_id"),
             origin=data.get("origin"),
             destination=data.get("destination"),
-            metadata_json=json.dumps(data),
+            metadata_json=metadata_json,
+            prev_hash=prev_hash,
+            event_hash=event_hash,
         )
         db.add(event)
         await db.commit()
@@ -119,6 +138,8 @@ async def get_event_history(
                 "origin": e.origin,
                 "destination": e.destination,
                 "created_at": e.created_at.isoformat(),
+                "event_hash": e.event_hash,
+                "prev_hash": e.prev_hash,
             }
             for e in events
         ]

@@ -33,6 +33,14 @@ DEFAULT_MAX_CAPACITY = 100
 # Buffer time between journeys (minutes)
 JOURNEY_BUFFER_MINUTES = 5
 
+VEHICLE_CAPACITY_WEIGHTS = {
+    "MOTORCYCLE": 0.5,
+    "CAR": 1.0,
+    "VAN": 1.5,
+    "TRUCK": 3.0,
+    "BUS": 4.0,
+}
+
 
 class ConflictDetectionService:
     """Detects scheduling conflicts for journey bookings."""
@@ -158,6 +166,8 @@ class ConflictDetectionService:
         arrival_time: datetime,
     ) -> str | None:
         """Check if road capacity is exceeded in the origin/destination grid cells."""
+        weight = VEHICLE_CAPACITY_WEIGHTS.get(request.vehicle_type.value, 1.0)
+        
         # Check capacity at origin
         origin_grid_lat = round(request.origin_lat / GRID_RESOLUTION) * GRID_RESOLUTION
         origin_grid_lng = round(request.origin_lng / GRID_RESOLUTION) * GRID_RESOLUTION
@@ -169,7 +179,7 @@ class ConflictDetectionService:
                     RoadSegmentCapacity.grid_lng == origin_grid_lng,
                     RoadSegmentCapacity.time_slot_start <= request.departure_time,
                     RoadSegmentCapacity.time_slot_end > request.departure_time,
-                    RoadSegmentCapacity.current_bookings >= RoadSegmentCapacity.max_capacity,
+                    RoadSegmentCapacity.current_bookings + weight > RoadSegmentCapacity.max_capacity,
                 )
             ).limit(1)
         )
@@ -187,7 +197,7 @@ class ConflictDetectionService:
                     RoadSegmentCapacity.grid_lng == dest_grid_lng,
                     RoadSegmentCapacity.time_slot_start <= arrival_time,
                     RoadSegmentCapacity.time_slot_end > arrival_time,
-                    RoadSegmentCapacity.current_bookings >= RoadSegmentCapacity.max_capacity,
+                    RoadSegmentCapacity.current_bookings + weight > RoadSegmentCapacity.max_capacity,
                 )
             ).limit(1)
         )
@@ -218,19 +228,20 @@ class ConflictDetectionService:
         )
         db.add(slot)
 
+        weight = VEHICLE_CAPACITY_WEIGHTS.get(request.vehicle_type.value, 1.0)
         # Update road capacity counters
         await ConflictDetectionService._increment_capacity(
-            db, request.origin_lat, request.origin_lng, request.departure_time
+            db, request.origin_lat, request.origin_lng, request.departure_time, weight
         )
         await ConflictDetectionService._increment_capacity(
-            db, request.destination_lat, request.destination_lng, arrival_time
+            db, request.destination_lat, request.destination_lng, arrival_time, weight
         )
 
         await db.commit()
 
     @staticmethod
     async def _increment_capacity(
-        db: AsyncSession, lat: float, lng: float, time: datetime
+        db: AsyncSession, lat: float, lng: float, time: datetime, weight: float
     ):
         """Increment the booking count for a grid cell at the given time."""
         grid_lat = round(lat / GRID_RESOLUTION) * GRID_RESOLUTION
@@ -256,7 +267,7 @@ class ConflictDetectionService:
         capacity = result.scalar_one_or_none()
 
         if capacity:
-            capacity.current_bookings += 1
+            capacity.current_bookings += weight
         else:
             capacity = RoadSegmentCapacity(
                 id=str(uuid.uuid4()),
@@ -264,7 +275,7 @@ class ConflictDetectionService:
                 grid_lng=grid_lng,
                 time_slot_start=slot_start,
                 time_slot_end=slot_end,
-                current_bookings=1,
+                current_bookings=weight,
                 max_capacity=DEFAULT_MAX_CAPACITY,
             )
             db.add(capacity)

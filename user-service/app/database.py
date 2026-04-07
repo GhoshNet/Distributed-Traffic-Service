@@ -14,8 +14,22 @@ DATABASE_URL = os.getenv(
     "postgresql+asyncpg://users_user:users_pass@localhost:5432/users_db",
 )
 
-engine = create_async_engine(DATABASE_URL, echo=False, pool_size=20, max_overflow=10)
+DATABASE_READ_URL = os.getenv("DATABASE_READ_URL", "")
+
+# Isolation level: READ COMMITTED — sufficient for user registration
+# because unique constraints on email/license prevent duplicates at the DB level.
+engine = create_async_engine(
+    DATABASE_URL, echo=False, pool_size=20, max_overflow=10,
+    execution_options={"isolation_level": "READ COMMITTED"},
+)
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+_read_url = DATABASE_READ_URL if DATABASE_READ_URL else DATABASE_URL
+read_engine = create_async_engine(
+    _read_url, echo=False, pool_size=20, max_overflow=10,
+    execution_options={"isolation_level": "READ COMMITTED"},
+)
+read_session = async_sessionmaker(read_engine, class_=AsyncSession, expire_on_commit=False)
 
 
 class Base(DeclarativeBase):
@@ -30,12 +44,26 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     license_number: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(50), default="DRIVER", nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class Vehicle(Base):
+    """Tracks registered vehicles per user for ownership verification."""
+    __tablename__ = "vehicles"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    registration: Mapped[str] = mapped_column(String(20), unique=True, nullable=False, index=True)
+    vehicle_type: Mapped[str] = mapped_column(String(20), default="CAR", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
     )
 
 
@@ -48,6 +76,15 @@ async def init_db():
 async def get_db() -> AsyncSession:
     """Dependency for getting a database session."""
     async with async_session() as session:
+        try:
+            yield session
+        finally:
+            await session.close()
+
+
+async def get_read_db() -> AsyncSession:
+    """Dependency for getting a read replica database session."""
+    async with read_session() as session:
         try:
             yield session
         finally:

@@ -17,7 +17,14 @@ DATABASE_URL = os.getenv(
     "postgresql+asyncpg://conflicts_user:conflicts_pass@localhost:5432/conflicts_db",
 )
 
-engine = create_async_engine(DATABASE_URL, echo=False, pool_size=20, max_overflow=10)
+# Isolation level: SERIALIZABLE — the Conflict Service is the single authority
+# for booking slot allocation. SERIALIZABLE prevents phantom reads where two
+# concurrent conflict checks could both see "no overlap" and both approve,
+# creating a double-booking. This is the critical path for correctness.
+engine = create_async_engine(
+    DATABASE_URL, echo=False, pool_size=20, max_overflow=10,
+    execution_options={"isolation_level": "SERIALIZABLE"},
+)
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
@@ -60,7 +67,7 @@ class RoadSegmentCapacity(Base):
     grid_lng: Mapped[float] = mapped_column(Float, nullable=False)
     time_slot_start: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     time_slot_end: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    current_bookings: Mapped[int] = mapped_column(Integer, default=0)
+    current_bookings: Mapped[float] = mapped_column(Float, default=0.0)
     max_capacity: Mapped[int] = mapped_column(Integer, default=100)
 
     __table_args__ = (

@@ -23,7 +23,7 @@ from shared.schemas import (
 
 logger = logging.getLogger(__name__)
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/1")
+REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/4")
 JOURNEY_SERVICE_URL = os.getenv("JOURNEY_SERVICE_URL", "http://journey-service:8000")
 
 redis_client = redis_async.from_url(REDIS_URL, decode_responses=True)
