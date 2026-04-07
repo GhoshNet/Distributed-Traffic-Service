@@ -1,17 +1,18 @@
-FROM python:3.12-slim
+FROM golang:1.23-alpine AS builder
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc libpq-dev && \
-    rm -rf /var/lib/apt/lists/*
+COPY analytics-service/go.mod ./
+COPY analytics-service/*.go ./
+RUN go mod tidy && CGO_ENABLED=0 GOOS=linux go build -o analytics-service .
 
-COPY shared/ /app/shared/
-COPY analytics-service/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+FROM alpine:3.20
 
-COPY analytics-service/app/ /app/app/
+RUN apk add --no-cache ca-certificates tzdata
+
+WORKDIR /app
+COPY --from=builder /app/analytics-service .
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+CMD ["./analytics-service"]
