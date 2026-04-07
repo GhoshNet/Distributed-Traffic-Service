@@ -14,6 +14,8 @@ DATABASE_URL = os.getenv(
     "postgresql+asyncpg://users_user:users_pass@localhost:5432/users_db",
 )
 
+DATABASE_READ_URL = os.getenv("DATABASE_READ_URL", "")
+
 # Isolation level: READ COMMITTED — sufficient for user registration
 # because unique constraints on email/license prevent duplicates at the DB level.
 engine = create_async_engine(
@@ -21,6 +23,13 @@ engine = create_async_engine(
     execution_options={"isolation_level": "READ COMMITTED"},
 )
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+_read_url = DATABASE_READ_URL if DATABASE_READ_URL else DATABASE_URL
+read_engine = create_async_engine(
+    _read_url, echo=False, pool_size=20, max_overflow=10,
+    execution_options={"isolation_level": "READ COMMITTED"},
+)
+read_session = async_sessionmaker(read_engine, class_=AsyncSession, expire_on_commit=False)
 
 
 class Base(DeclarativeBase):
@@ -54,6 +63,15 @@ async def init_db():
 async def get_db() -> AsyncSession:
     """Dependency for getting a database session."""
     async with async_session() as session:
+        try:
+            yield session
+        finally:
+            await session.close()
+
+
+async def get_read_db() -> AsyncSession:
+    """Dependency for getting a read replica database session."""
+    async with read_session() as session:
         try:
             yield session
         finally:
