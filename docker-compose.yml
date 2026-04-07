@@ -1,3 +1,5 @@
+version: '3.8'
+
 services:
   # ==========================================
   # Infrastructure Services
@@ -70,8 +72,71 @@ services:
       RABBITMQ_DEFAULT_USER: journey_admin
       RABBITMQ_DEFAULT_PASS: journey_pass
       RABBITMQ_DEFAULT_VHOST: journey_vhost
+      RABBITMQ_NODENAME: rabbit@rabbitmq
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: [ "CMD", "rabbitmq-diagnostics", "-q", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - journey-net
+
+  rabbitmq-2:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_ERLANG_COOKIE: "journey_cluster_cookie"
+      RABBITMQ_DEFAULT_USER: journey_admin
+      RABBITMQ_DEFAULT_PASS: journey_pass
+      RABBITMQ_DEFAULT_VHOST: journey_vhost
+      RABBITMQ_NODENAME: rabbit@rabbitmq-2
+    volumes:
+      - rabbitmq_data_2:/var/lib/rabbitmq
+    command: >
+      sh -c "
+      rabbitmq-server -detached &&
+      sleep 10 &&
+      rabbitmqctl stop_app &&
+      rabbitmqctl join_cluster rabbit@rabbitmq &&
+      rabbitmqctl start_app &&
+      sleep infinity
+      "
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "rabbitmq-diagnostics", "-q", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - journey-net
+
+  rabbitmq-3:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_ERLANG_COOKIE: "journey_cluster_cookie"
+      RABBITMQ_DEFAULT_USER: journey_admin
+      RABBITMQ_DEFAULT_PASS: journey_pass
+      RABBITMQ_DEFAULT_VHOST: journey_vhost
+      RABBITMQ_NODENAME: rabbit@rabbitmq-3
+    volumes:
+      - rabbitmq_data_3:/var/lib/rabbitmq
+    command: >
+      sh -c "
+      rabbitmq-server -detached &&
+      sleep 15 &&
+      rabbitmqctl stop_app &&
+      rabbitmqctl join_cluster rabbit@rabbitmq &&
+      rabbitmqctl start_app &&
+      sleep infinity
+      "
+    depends_on:
+      rabbitmq-2:
+        condition: service_healthy
     healthcheck:
       test: [ "CMD", "rabbitmq-diagnostics", "-q", "ping" ]
       interval: 10s
@@ -572,6 +637,8 @@ services:
 
 volumes:
   rabbitmq_data:
+  rabbitmq_data_2:
+  rabbitmq_data_3:
   redis_data:
   pg_users_data:
   pg_users_replica_data:
