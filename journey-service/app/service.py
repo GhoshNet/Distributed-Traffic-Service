@@ -2,11 +2,13 @@
 Journey Service - Business logic layer.
 """
 
+import os
 import uuid
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
 
+import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, func
 
@@ -21,6 +23,8 @@ from shared.schemas import (
 )
 
 logger = logging.getLogger(__name__)
+
+USER_SERVICE_URL = os.getenv("USER_SERVICE_URL", "http://user-service:8000")
 
 
 class JourneyService:
@@ -43,6 +47,11 @@ class JourneyService:
             if record:
                 # Return existing journey
                 return await JourneyService.get_journey(db, record.journey_id, user_id)
+
+        # Vehicle ownership verification
+        await JourneyService._verify_vehicle_ownership(
+            user_id, request.vehicle_registration
+        )
 
         journey_id = str(uuid.uuid4())
         departure_naive = request.departure_time.replace(tzinfo=None)
@@ -244,6 +253,34 @@ class JourneyService:
     # ==========================================
     # Helpers
     # ==========================================
+
+    @staticmethod
+    async def _verify_vehicle_ownership(user_id: str, vehicle_registration: str):
+        """Verify that the vehicle registration belongs to the user via user-service."""
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                response = await client.get(
+                    f"{USER_SERVICE_URL}/api/users/vehicles/verify/{vehicle_registration}",
+                    params={"user_id": user_id},
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    if not data.get("is_owner"):
+                        raise ValueError(
+                            f"Vehicle {vehicle_registration.upper()} is not registered to your account. "
+                            f"Please register it first in 'My Vehicles'."
+                        )
+                else:
+                    logger.warning(f"Vehicle verification returned {response.status_code}")
+                    raise ValueError("Could not verify vehicle ownership. Please try again.")
+        except httpx.ConnectError:
+            logger.error("Cannot connect to user-service for vehicle verification")
+            raise ValueError("Vehicle verification service unavailable. Please try again.")
+        except ValueError:
+            raise
+        except Exception as e:
+            logger.error(f"Vehicle verification error: {e}")
+            raise ValueError("Vehicle verification failed. Please try again.")
 
     @staticmethod
     def _to_response(journey: Journey) -> JourneyResponse:

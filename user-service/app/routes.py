@@ -15,6 +15,9 @@ from shared.schemas import (
     UserResponse,
     TokenResponse,
     ErrorResponse,
+    VehicleRegisterRequest,
+    VehicleResponse,
+    VehicleListResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -98,3 +101,86 @@ async def get_user_by_license(
         return await UserService.get_user_by_license(db, license_number)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+# ==========================================
+# Vehicle Management
+# ==========================================
+
+@router.post(
+    "/vehicles",
+    response_model=VehicleResponse,
+    status_code=201,
+    responses={409: {"model": ErrorResponse}},
+)
+async def register_vehicle(
+    request: VehicleRegisterRequest,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Register a vehicle to the current user."""
+    try:
+        vehicle = await UserService.register_vehicle(
+            db, current_user["user_id"], request.registration, request.vehicle_type.value
+        )
+        return VehicleResponse(
+            id=vehicle.id,
+            user_id=vehicle.user_id,
+            registration=vehicle.registration,
+            vehicle_type=vehicle.vehicle_type,
+            created_at=vehicle.created_at,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@router.get(
+    "/vehicles",
+    response_model=VehicleListResponse,
+)
+async def list_vehicles(
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all vehicles belonging to the current user."""
+    vehicles = await UserService.list_vehicles(db, current_user["user_id"])
+    return VehicleListResponse(
+        vehicles=[
+            VehicleResponse(
+                id=v.id, user_id=v.user_id, registration=v.registration,
+                vehicle_type=v.vehicle_type, created_at=v.created_at,
+            )
+            for v in vehicles
+        ]
+    )
+
+
+@router.delete(
+    "/vehicles/{vehicle_id}",
+    status_code=204,
+    responses={404: {"model": ErrorResponse}},
+)
+async def delete_vehicle(
+    vehicle_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove a vehicle from the current user's account."""
+    try:
+        await UserService.delete_vehicle(db, current_user["user_id"], vehicle_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get(
+    "/vehicles/verify/{registration}",
+)
+async def verify_vehicle_ownership(
+    registration: str,
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Internal endpoint: verify that a vehicle registration belongs to a user."""
+    is_owner = await UserService.verify_vehicle_ownership(db, user_id, registration)
+    return {"is_owner": is_owner, "registration": registration.upper(), "user_id": user_id}
+

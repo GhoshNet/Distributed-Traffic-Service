@@ -54,6 +54,19 @@ class User(Base):
     )
 
 
+class Vehicle(Base):
+    """Tracks registered vehicles per user for ownership verification."""
+    __tablename__ = "vehicles"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    registration: Mapped[str] = mapped_column(String(20), unique=True, nullable=False, index=True)
+    vehicle_type: Mapped[str] = mapped_column(String(20), default="CAR", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+
 async def init_db():
     """Create all tables."""
     async with engine.begin() as conn:

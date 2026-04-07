@@ -141,6 +141,7 @@ body {
 .g4 { display: grid; grid-template-columns: repeat(4,1fr); gap: 20px; margin-bottom: 20px; }
 .g-map { display: grid; grid-template-rows: 1fr; height: calc(100vh - 120px); gap: 20px; }
 .g-split { display: grid; grid-template-columns: 350px 1fr; gap: 20px; height: calc(100vh - 120px);}
+.g-split-3 { display: grid; grid-template-columns: 350px 300px 1fr; gap: 20px; height: calc(100vh - 120px);}
 
 /* LEAFLET MAP overrides */
 #map { width: 100%; height: 100%; border-radius: var(--radius); border: 1px solid var(--card-border); z-index: 1;}
@@ -225,3 +226,35 @@ select.form-input:focus {
   font-size: 18px; line-height: 1; padding: 0 2px;
 }
 .toast-close:hover { color: var(--text-main); }
+
+/* AUTOCOMPLETE */
+.autocomplete-wrapper { position: relative; }
+.autocomplete-results {
+  display: none; position: absolute; top: 100%; left: 0; right: 0; z-index: 100;
+  background: rgba(20, 20, 20, 0.97); border: 1px solid var(--card-border);
+  border-radius: 0 0 10px 10px; max-height: 220px; overflow-y: auto;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5); backdrop-filter: blur(12px);
+}
+.autocomplete-results::-webkit-scrollbar { width: 5px; }
+.autocomplete-results::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+.autocomplete-item {
+  padding: 10px 14px; cursor: pointer; transition: background 0.15s;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.autocomplete-item:hover { background: rgba(138, 43, 226, 0.15); }
+.autocomplete-item:last-child { border-bottom: none; }
+.autocomplete-item.no-results { color: var(--text-muted); cursor: default; }
+.autocomplete-item.no-results:hover { background: transparent; }
+.ac-name { font-size: 14px; font-weight: 500; color: var(--text-main); }
+.ac-detail { font-size: 11px; color: var(--text-muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* BUTTON VARIANTS */
+.btn-sm { padding: 6px 14px; font-size: 12px; border-radius: 8px; }
+.btn-danger {
+  background: rgba(255, 23, 68, 0.15); color: var(--danger);
+  border: 1px solid rgba(255,23,68,0.3); font-size: 12px; padding: 6px 12px;
+  border-radius: 8px; cursor: pointer; transition: all 0.2s;
+  font-family: 'Outfit', sans-serif; font-weight: 600;
+}
+.btn-danger:hover { background: rgba(255, 23, 68, 0.3); }
+

@@ -120,17 +120,23 @@
 
       <!-- JOURNEYS VIEW -->
       <div id="view-journeys" class="view">
-        <div class="g-split">
+        <div class="g-split-3">
           <div class="card">
             <div class="card-title">Book New Journey</div>
             <form onsubmit="bookJourney(event)">
               <div class="form-group">
                 <label class="form-label">Origin</label>
-                <select class="form-input" id="j-origin" required></select>
+                <div class="autocomplete-wrapper">
+                  <input class="form-input" type="text" id="j-origin" placeholder="Search for a location..." autocomplete="off" required>
+                  <div class="autocomplete-results" id="j-origin-results"></div>
+                </div>
               </div>
               <div class="form-group">
                 <label class="form-label">Destination</label>
-                <select class="form-input" id="j-dest" required></select>
+                <div class="autocomplete-wrapper">
+                  <input class="form-input" type="text" id="j-dest" placeholder="Search for a location..." autocomplete="off" required>
+                  <div class="autocomplete-results" id="j-dest-results"></div>
+                </div>
               </div>
               <div class="form-group">
                 <label class="form-label">Departure</label>
@@ -141,21 +147,34 @@
                 <input class="form-input" type="number" id="j-dur" value="120" required>
               </div>
               <div class="form-group">
-                <label class="form-label">Vehicle Registration</label>
-                <input class="form-input" type="text" id="j-plate" placeholder="ABC-1234" required>
-              </div>
-              <div class="form-group">
-                <label class="form-label">Vehicle Type</label>
-                <select class="form-input" id="j-vtype" required>
-                  <option value="CAR">CAR (Standard)</option>
-                  <option value="MOTORCYCLE">MOTORCYCLE (Light)</option>
-                  <option value="VAN">VAN (Medium)</option>
-                  <option value="TRUCK">TRUCK (Heavy)</option>
-                  <option value="BUS">BUS (Very Heavy)</option>
+                <label class="form-label">Vehicle</label>
+                <select class="form-input" id="j-vehicle" required>
+                  <option value="">Select a registered vehicle...</option>
                 </select>
               </div>
               <button class="btn btn-primary btn-full" type="submit">Submit Request</button>
             </form>
+          </div>
+          <div class="card">
+            <div class="card-title">My Vehicles
+              <button class="btn btn-sm btn-primary" onclick="showAddVehicle()">+ Add</button>
+            </div>
+            <div id="add-vehicle-form" style="display:none; margin-bottom:16px;">
+              <div class="form-group">
+                <input class="form-input" type="text" id="v-plate" placeholder="Registration (e.g. ABC-1234)">
+              </div>
+              <div class="form-group">
+                <select class="form-input" id="v-type">
+                  <option value="CAR">CAR</option>
+                  <option value="MOTORCYCLE">MOTORCYCLE</option>
+                  <option value="VAN">VAN</option>
+                  <option value="TRUCK">TRUCK</option>
+                  <option value="BUS">BUS</option>
+                </select>
+              </div>
+              <button class="btn btn-primary btn-full" onclick="addVehicle()">Register Vehicle</button>
+            </div>
+            <div id="vehicle-list" class="item-list"></div>
           </div>
           <div class="card">
             <div class="card-title">My Journey Logs</div>

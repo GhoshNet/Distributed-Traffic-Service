@@ -89,6 +89,26 @@ class TokenResponse(BaseModel):
     expires_in: int
 
 
+class VehicleRegisterRequest(BaseModel):
+    registration: str = Field(..., description="Vehicle registration plate")
+    vehicle_type: VehicleType = Field(default=VehicleType.CAR, description="Type of vehicle")
+
+
+class VehicleResponse(BaseModel):
+    id: str
+    user_id: str
+    registration: str
+    vehicle_type: VehicleType
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class VehicleListResponse(BaseModel):
+    vehicles: list[VehicleResponse]
+
+
 # ==========================================
 # Journey Schemas
 # ==========================================

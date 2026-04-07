@@ -134,3 +134,75 @@ class UserService:
             role=user.role,
             created_at=user.created_at,
         )
+
+    # ==========================================
+    # Vehicle Management
+    # ==========================================
+
+    @staticmethod
+    async def register_vehicle(
+        db: AsyncSession, user_id: str, registration: str, vehicle_type: str
+    ):
+        """Register a vehicle to a user."""
+        from .database import Vehicle
+
+        # Check if registration already taken
+        existing = await db.execute(
+            select(Vehicle).where(Vehicle.registration == registration.upper())
+        )
+        if existing.scalar_one_or_none():
+            raise ValueError("Vehicle registration already registered to a user")
+
+        vehicle = Vehicle(
+            id=str(uuid.uuid4()),
+            user_id=user_id,
+            registration=registration.upper(),
+            vehicle_type=vehicle_type,
+        )
+        db.add(vehicle)
+        await db.commit()
+        await db.refresh(vehicle)
+
+        logger.info(f"Vehicle {registration} registered to user {user_id}")
+        return vehicle
+
+    @staticmethod
+    async def list_vehicles(db: AsyncSession, user_id: str):
+        """List all vehicles belonging to a user."""
+        from .database import Vehicle
+
+        result = await db.execute(
+            select(Vehicle).where(Vehicle.user_id == user_id).order_by(Vehicle.created_at.desc())
+        )
+        return result.scalars().all()
+
+    @staticmethod
+    async def delete_vehicle(db: AsyncSession, user_id: str, vehicle_id: str):
+        """Remove a vehicle from a user's account."""
+        from .database import Vehicle
+
+        result = await db.execute(
+            select(Vehicle).where(Vehicle.id == vehicle_id, Vehicle.user_id == user_id)
+        )
+        vehicle = result.scalar_one_or_none()
+        if not vehicle:
+            raise ValueError("Vehicle not found")
+
+        await db.delete(vehicle)
+        await db.commit()
+        logger.info(f"Vehicle {vehicle.registration} removed from user {user_id}")
+
+    @staticmethod
+    async def verify_vehicle_ownership(
+        db: AsyncSession, user_id: str, registration: str
+    ) -> bool:
+        """Check if a vehicle registration belongs to a specific user."""
+        from .database import Vehicle
+
+        result = await db.execute(
+            select(Vehicle).where(
+                Vehicle.registration == registration.upper(),
+                Vehicle.user_id == user_id,
+            )
+        )
+        return result.scalar_one_or_none() is not None

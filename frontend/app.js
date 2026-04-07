@@ -1,21 +1,17 @@
 const API = 'http://localhost:8080';
 const WS = 'ws://localhost:8080';
 
-const CITIES = [
-  { name: 'Dublin', lat: 53.3498, lng: -6.2603 },
-  { name: 'Cork', lat: 51.8985, lng: -8.4756 },
-  { name: 'Galway', lat: 53.2707, lng: -9.0568 },
-  { name: 'Limerick', lat: 52.6638, lng: -8.6267 },
-  { name: 'Waterford', lat: 52.2593, lng: -7.1101 },
-  { name: 'Belfast', lat: 54.5973, lng: -5.9301 }
-];
-
 let token = localStorage.getItem('jb_token');
 let user = JSON.parse(localStorage.getItem('jb_user') || 'null');
 let wsConn = null;
 let mapInstance = null;
 let markers = {};
 let layerGroup = null;
+
+// Geocoding state — stores the selected location objects
+let selectedOrigin = null;
+let selectedDest = null;
+let geocodeTimers = {};
 
 // Routing logic
 if (token && user) enterApp();
@@ -35,12 +31,30 @@ async function login(e) {
       body: JSON.stringify({email: e.target[0].value, password: e.target[1].value})
     });
     const d = await r.json();
-    if (!r.ok) throw new Error(d.detail);
+    if (!r.ok) throw new Error(parseErrorDetail(d));
     token = d.access_token; localStorage.setItem('jb_token', token);
     const p = await fetch(API+'/api/users/me', {headers:{'Authorization': `Bearer ${token}`}});
     user = await p.json(); localStorage.setItem('jb_user', JSON.stringify(user));
     enterApp();
   } catch(err) { showToast("Login failed: " + err.message, "error"); }
+}
+
+// =============================================
+// BUG FIX 1: Parse error detail properly
+// Handles both string detail (409/401) and array detail (422 validation errors)
+// =============================================
+function parseErrorDetail(data) {
+    if (!data) return 'Unknown error';
+    const detail = data.detail;
+    if (!detail) return data.message || JSON.stringify(data);
+    if (typeof detail === 'string') return detail;
+    if (Array.isArray(detail)) {
+        return detail.map(err => {
+            const field = err.loc ? err.loc[err.loc.length - 1] : 'field';
+            return `${field}: ${err.msg}`;
+        }).join('; ');
+    }
+    return String(detail);
 }
 
 async function register(e) {
@@ -53,7 +67,7 @@ async function register(e) {
                 license_number: e.target[2].value, password: e.target[3].value
             })
         });
-        if(!r.ok) throw new Error((await r.json()).detail);
+        if(!r.ok) throw new Error(parseErrorDetail(await r.json()));
         switchAuth('login');
         showToast("Registered successfully. Please login.", "success");
     } catch(err) { showToast(err.message, "error"); }
@@ -70,7 +84,11 @@ function enterApp() {
   initMap();
   go('map');
   connectWS();
-  populateDropdowns();
+  setupAutocomplete();
+  loadVehicles();
+  // Set default departure time
+  let d = new Date(); d.setHours(d.getHours()+1);
+  document.getElementById('j-depart').value = d.toISOString().slice(0,16);
 }
 
 function go(view) {
@@ -79,9 +97,13 @@ function go(view) {
   document.getElementById(`view-${view}`).classList.add('active');
   document.getElementById(`nav-${view}`).classList.add('active');
 
-  if(view === 'map') setTimeout(() => mapInstance.invalidateSize(), 300);
+  // BUG FIX 2: Load journeys on map view too so markers appear
+  if(view === 'map') {
+    setTimeout(() => mapInstance.invalidateSize(), 300);
+    loadJourneys();
+  }
   if(view === 'dash') loadDashboard();
-  if(view === 'journeys') { loadJourneys(); }
+  if(view === 'journeys') { loadJourneys(); loadVehicles(); }
 }
 
 function initMap() {
@@ -141,29 +163,105 @@ async function authFetch(url, opts={}) {
   return fetch(API+url, opts);
 }
 
-function populateDropdowns() {
-    const opts = CITIES.map(c => `<option value="${c.name}">${c.name}</option>`);
-    document.getElementById('j-origin').innerHTML = '<option value="">Origin...</option>' + opts.join('');
-    document.getElementById('j-dest').innerHTML = '<option value="">Dest...</option>' + opts.join('');
-    
-    let d = new Date(); d.setHours(d.getHours()+1);
-    document.getElementById('j-depart').value = d.toISOString().slice(0,16);
+// =============================================
+// BUG FIX 3: Geocoding autocomplete (replaces hardcoded cities)
+// Uses OpenStreetMap Nominatim for free worldwide geocoding
+// =============================================
+function setupAutocomplete() {
+    setupGeoInput('j-origin', 'j-origin-results', (place) => {
+        selectedOrigin = place;
+    });
+    setupGeoInput('j-dest', 'j-dest-results', (place) => {
+        selectedDest = place;
+    });
+}
+
+function setupGeoInput(inputId, resultsId, onSelect) {
+    const input = document.getElementById(inputId);
+    const results = document.getElementById(resultsId);
+
+    input.addEventListener('input', () => {
+        const query = input.value.trim();
+        if (query.length < 3) { results.innerHTML = ''; results.style.display = 'none'; return; }
+
+        // Debounce: wait 350ms after last keystroke
+        clearTimeout(geocodeTimers[inputId]);
+        geocodeTimers[inputId] = setTimeout(() => geocodeSearch(query, results, input, onSelect), 350);
+    });
+
+    input.addEventListener('blur', () => {
+        // Delay hide so click events on results fire first
+        setTimeout(() => { results.style.display = 'none'; }, 200);
+    });
+
+    input.addEventListener('focus', () => {
+        if (results.innerHTML) results.style.display = 'block';
+    });
+}
+
+async function geocodeSearch(query, resultsEl, inputEl, onSelect) {
+    try {
+        const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=6&addressdetails=1`;
+        const r = await fetch(url, { headers: { 'Accept-Language': 'en' } });
+        const places = await r.json();
+
+        if (places.length === 0) {
+            resultsEl.innerHTML = '<div class="autocomplete-item no-results">No results found</div>';
+            resultsEl.style.display = 'block';
+            return;
+        }
+
+        resultsEl.innerHTML = places.map((p, i) => `
+            <div class="autocomplete-item" data-idx="${i}">
+                <div class="ac-name">${p.display_name.split(',').slice(0,3).join(', ')}</div>
+                <div class="ac-detail">${p.display_name}</div>
+            </div>
+        `).join('');
+        resultsEl.style.display = 'block';
+
+        // Attach click handlers
+        resultsEl.querySelectorAll('.autocomplete-item:not(.no-results)').forEach((el) => {
+            el.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                const idx = parseInt(el.dataset.idx);
+                const place = places[idx];
+                inputEl.value = place.display_name.split(',').slice(0,3).join(', ');
+                onSelect({
+                    name: place.display_name.split(',').slice(0,3).join(', '),
+                    full_name: place.display_name,
+                    lat: parseFloat(place.lat),
+                    lng: parseFloat(place.lon),
+                });
+                resultsEl.style.display = 'none';
+            });
+        });
+    } catch(err) {
+        console.error('Geocoding error:', err);
+        resultsEl.innerHTML = '<div class="autocomplete-item no-results">Search failed</div>';
+        resultsEl.style.display = 'block';
+    }
 }
 
 async function bookJourney(e) {
     e.preventDefault();
-    const origin = CITIES.find(c => c.name === document.getElementById('j-origin').value);
-    const dest = CITIES.find(c => c.name === document.getElementById('j-dest').value);
-    if(!origin || !dest) return showToast("Select origin and destination", "error");
+    if(!selectedOrigin) return showToast("Please search and select an origin location", "error");
+    if(!selectedDest) return showToast("Please search and select a destination location", "error");
+
+    const vehicleSelect = document.getElementById('j-vehicle');
+    const selectedVehicle = vehicleSelect.value;
+    if(!selectedVehicle) return showToast("Please select a registered vehicle", "error");
+
+    // Parse "REGISTRATION|TYPE" from the select value
+    const [plate, vtype] = selectedVehicle.split('|');
 
     const payload = {
-        origin: origin.name, destination: dest.name,
-        origin_lat: origin.lat, origin_lng: origin.lng,
-        destination_lat: dest.lat, destination_lng: dest.lng,
+        origin: selectedOrigin.name, destination: selectedDest.name,
+        origin_lat: selectedOrigin.lat, origin_lng: selectedOrigin.lng,
+        destination_lat: selectedDest.lat, destination_lng: selectedDest.lng,
         departure_time: new Date(document.getElementById('j-depart').value).toISOString(),
         estimated_duration_minutes: parseInt(document.getElementById('j-dur').value),
-        vehicle_registration: document.getElementById('j-plate').value.toUpperCase(),
-        vehicle_type: document.getElementById('j-vtype').value
+        vehicle_registration: plate,
+        vehicle_type: vtype
     };
 
     try {
@@ -172,7 +270,7 @@ async function bookJourney(e) {
             body: JSON.stringify(payload)
         });
         const d = await r.json();
-        if(!r.ok) throw new Error(d.detail);
+        if(!r.ok) throw new Error(parseErrorDetail(d));
         if(d.status === "REJECTED") {
             showToast(`Rejected: ${d.rejection_reason}`, "error");
         } else {
@@ -238,6 +336,78 @@ async function loadJourneys() {
     } catch(err) {
         console.error('loadJourneys error:', err);
     }
+}
+
+// =============================================
+// BUG FIX 4: Vehicle management
+// =============================================
+async function loadVehicles() {
+    try {
+        const r = await authFetch('/api/users/vehicles');
+        if (!r.ok) return;
+        const data = await r.json();
+        const vehicles = data.vehicles || [];
+
+        // Update vehicle list UI
+        const list = document.getElementById('vehicle-list');
+        if (vehicles.length === 0) {
+            list.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:16px;">No vehicles registered. Add one to book journeys.</div>';
+        } else {
+            list.innerHTML = vehicles.map(v => `
+                <div class="data-item">
+                    <div>
+                        <div style="font-weight:600;font-size:15px">${v.registration}</div>
+                        <div style="font-size:12px;color:var(--text-muted)">${v.vehicle_type}</div>
+                    </div>
+                    <button class="btn btn-sm btn-danger" onclick="removeVehicle('${v.id}')">Remove</button>
+                </div>
+            `).join('');
+        }
+
+        // Update the booking form vehicle dropdown
+        const select = document.getElementById('j-vehicle');
+        select.innerHTML = '<option value="">Select a registered vehicle...</option>' +
+            vehicles.map(v => `<option value="${v.registration}|${v.vehicle_type}">${v.registration} (${v.vehicle_type})</option>`).join('');
+
+    } catch(err) {
+        console.error('loadVehicles error:', err);
+    }
+}
+
+function showAddVehicle() {
+    const form = document.getElementById('add-vehicle-form');
+    form.style.display = form.style.display === 'none' ? 'block' : 'none';
+}
+
+async function addVehicle() {
+    const plate = document.getElementById('v-plate').value.trim();
+    const vtype = document.getElementById('v-type').value;
+    if (!plate) return showToast("Enter a registration plate", "error");
+
+    try {
+        const r = await authFetch('/api/users/vehicles', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ registration: plate, vehicle_type: vtype })
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(parseErrorDetail(d));
+        showToast(`Vehicle ${d.registration} registered!`, "success");
+        document.getElementById('v-plate').value = '';
+        document.getElementById('add-vehicle-form').style.display = 'none';
+        await loadVehicles();
+    } catch(err) { showToast(err.message, "error"); }
+}
+
+async function removeVehicle(vehicleId) {
+    try {
+        const r = await authFetch(`/api/users/vehicles/${vehicleId}`, { method: 'DELETE' });
+        if (!r.ok && r.status !== 204) {
+            const d = await r.json();
+            throw new Error(parseErrorDetail(d));
+        }
+        showToast("Vehicle removed", "success");
+        await loadVehicles();
+    } catch(err) { showToast(err.message, "error"); }
 }
 
 async function loadDashboard() {
