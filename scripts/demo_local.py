@@ -178,6 +178,29 @@ async def main():
     bob_headers = {"Authorization": f"Bearer {bob_token}"}
 
     # ============================================
+    # Step 3b: Register Vehicles
+    # ============================================
+    header("Step 3b: Register Vehicles")
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(f"{USER_URL}/api/users/vehicles", json={
+            "registration": "221-D-12345",
+            "vehicle_type": "CAR"
+        }, headers=alice_headers)
+        if resp.status_code in (201, 409):
+            success("Alice's vehicle 221-D-12345 registered")
+        else:
+            error(f"Alice vehicle registration failed: {resp.text}")
+
+        resp = await client.post(f"{USER_URL}/api/users/vehicles", json={
+            "registration": "231-L-67890",
+            "vehicle_type": "CAR"
+        }, headers=bob_headers)
+        if resp.status_code in (201, 409):
+            success("Bob's vehicle 231-L-67890 registered")
+        else:
+            error(f"Bob vehicle registration failed: {resp.text}")
+
+    # ============================================
     # Step 4: Book Journey (CONFIRMED)
     # ============================================
     header("Step 4: Book Journey for Alice (Expected: CONFIRMED)")

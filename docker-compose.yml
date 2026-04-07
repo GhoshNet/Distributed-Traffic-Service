@@ -179,16 +179,19 @@ services:
 
   redis-sentinel:
     image: redis:7-alpine
-    command: >
-      sh -c "
-      cat > /tmp/sentinel.conf <<EOF
-      sentinel monitor mymaster redis 6379 2
-      sentinel down-after-milliseconds mymaster 5000
-      sentinel failover-timeout mymaster 10000
-      sentinel parallel-syncs mymaster 1
-      EOF
-      redis-sentinel /tmp/sentinel.conf
-      "
+    command:
+      - sh
+      - -c
+      - |
+        until REDIS_IP=$(getent hosts redis | awk '{print $1; exit}') && [ -n "$REDIS_IP" ]; do
+          echo "Waiting for redis DNS..."
+          sleep 2
+        done
+        echo "sentinel monitor mymaster $REDIS_IP 6379 2" > /tmp/sentinel.conf
+        echo "sentinel down-after-milliseconds mymaster 5000" >> /tmp/sentinel.conf
+        echo "sentinel failover-timeout mymaster 10000" >> /tmp/sentinel.conf
+        echo "sentinel parallel-syncs mymaster 1" >> /tmp/sentinel.conf
+        exec redis-sentinel /tmp/sentinel.conf
     ports:
       - "26379:26379"
     depends_on:
@@ -202,16 +205,19 @@ services:
 
   redis-sentinel-2:
     image: redis:7-alpine
-    command: >
-      sh -c "
-      cat > /tmp/sentinel.conf <<EOF
-      sentinel monitor mymaster redis 6379 2
-      sentinel down-after-milliseconds mymaster 5000
-      sentinel failover-timeout mymaster 10000
-      sentinel parallel-syncs mymaster 1
-      EOF
-      redis-sentinel /tmp/sentinel.conf
-      "
+    command:
+      - sh
+      - -c
+      - |
+        until REDIS_IP=$(getent hosts redis | awk '{print $1; exit}') && [ -n "$REDIS_IP" ]; do
+          echo "Waiting for redis DNS..."
+          sleep 2
+        done
+        echo "sentinel monitor mymaster $REDIS_IP 6379 2" > /tmp/sentinel.conf
+        echo "sentinel down-after-milliseconds mymaster 5000" >> /tmp/sentinel.conf
+        echo "sentinel failover-timeout mymaster 10000" >> /tmp/sentinel.conf
+        echo "sentinel parallel-syncs mymaster 1" >> /tmp/sentinel.conf
+        exec redis-sentinel /tmp/sentinel.conf
     depends_on:
       redis:
         condition: service_healthy
@@ -223,16 +229,19 @@ services:
 
   redis-sentinel-3:
     image: redis:7-alpine
-    command: >
-      sh -c "
-      cat > /tmp/sentinel.conf <<EOF
-      sentinel monitor mymaster redis 6379 2
-      sentinel down-after-milliseconds mymaster 5000
-      sentinel failover-timeout mymaster 10000
-      sentinel parallel-syncs mymaster 1
-      EOF
-      redis-sentinel /tmp/sentinel.conf
-      "
+    command:
+      - sh
+      - -c
+      - |
+        until REDIS_IP=$(getent hosts redis | awk '{print $1; exit}') && [ -n "$REDIS_IP" ]; do
+          echo "Waiting for redis DNS..."
+          sleep 2
+        done
+        echo "sentinel monitor mymaster $REDIS_IP 6379 2" > /tmp/sentinel.conf
+        echo "sentinel down-after-milliseconds mymaster 5000" >> /tmp/sentinel.conf
+        echo "sentinel failover-timeout mymaster 10000" >> /tmp/sentinel.conf
+        echo "sentinel parallel-syncs mymaster 1" >> /tmp/sentinel.conf
+        exec redis-sentinel /tmp/sentinel.conf
     depends_on:
       redis:
         condition: service_healthy
@@ -254,6 +263,7 @@ services:
       POSTGRES_PASSWORD: users_pass
     volumes:
       - pg_users_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
     command: >
       postgres
         -c wal_level=replica
@@ -278,12 +288,14 @@ services:
       - pg_users_replica_data:/var/lib/postgresql/data
     entrypoint: |
       bash -c "
+      chown -R postgres:postgres /var/lib/postgresql/data
+      chmod 700 /var/lib/postgresql/data
       if [ ! -f /var/lib/postgresql/data/PG_VERSION ]; then
         echo 'Initializing replica from primary...'
         until pg_isready -h postgres-users -U users_user -d users_db; do sleep 2; done
-        pg_basebackup -h postgres-users -U users_user -D /var/lib/postgresql/data -Fp -Xs -P -R
+        gosu postgres pg_basebackup -h postgres-users -U users_user -D /var/lib/postgresql/data -Fp -Xs -P -R
       fi
-      exec postgres -c hot_standby=on
+      exec gosu postgres postgres -c hot_standby=on
       "
     depends_on:
       postgres-users:
@@ -306,6 +318,7 @@ services:
       POSTGRES_PASSWORD: journeys_pass
     volumes:
       - pg_journeys_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
     command: >
       postgres
         -c wal_level=replica
@@ -330,12 +343,14 @@ services:
       - pg_journeys_replica_data:/var/lib/postgresql/data
     entrypoint: |
       bash -c "
+      chown -R postgres:postgres /var/lib/postgresql/data
+      chmod 700 /var/lib/postgresql/data
       if [ ! -f /var/lib/postgresql/data/PG_VERSION ]; then
         echo 'Initializing replica from primary...'
         until pg_isready -h postgres-journeys -U journeys_user -d journeys_db; do sleep 2; done
-        pg_basebackup -h postgres-journeys -U journeys_user -D /var/lib/postgresql/data -Fp -Xs -P -R
+        gosu postgres pg_basebackup -h postgres-journeys -U journeys_user -D /var/lib/postgresql/data -Fp -Xs -P -R
       fi
-      exec postgres -c hot_standby=on
+      exec gosu postgres postgres -c hot_standby=on
       "
     depends_on:
       postgres-journeys:
@@ -360,6 +375,7 @@ services:
       POSTGRES_PASSWORD: conflicts_pass
     volumes:
       - pg_conflicts_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
     command: >
       postgres
         -c wal_level=replica
@@ -384,12 +400,14 @@ services:
       - pg_conflicts_replica_data:/var/lib/postgresql/data
     entrypoint: |
       bash -c "
+      chown -R postgres:postgres /var/lib/postgresql/data
+      chmod 700 /var/lib/postgresql/data
       if [ ! -f /var/lib/postgresql/data/PG_VERSION ]; then
         echo 'Initializing replica from primary...'
         until pg_isready -h postgres-conflicts -U conflicts_user -d conflicts_db; do sleep 2; done
-        pg_basebackup -h postgres-conflicts -U conflicts_user -D /var/lib/postgresql/data -Fp -Xs -P -R
+        gosu postgres pg_basebackup -h postgres-conflicts -U conflicts_user -D /var/lib/postgresql/data -Fp -Xs -P -R
       fi
-      exec postgres -c hot_standby=on
+      exec gosu postgres postgres -c hot_standby=on
       "
     depends_on:
       postgres-conflicts:
@@ -412,6 +430,7 @@ services:
       POSTGRES_PASSWORD: analytics_pass
     volumes:
       - pg_analytics_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
     command: >
       postgres
         -c wal_level=replica
@@ -436,12 +455,14 @@ services:
       - pg_analytics_replica_data:/var/lib/postgresql/data
     entrypoint: |
       bash -c "
+      chown -R postgres:postgres /var/lib/postgresql/data
+      chmod 700 /var/lib/postgresql/data
       if [ ! -f /var/lib/postgresql/data/PG_VERSION ]; then
         echo 'Initializing replica from primary...'
         until pg_isready -h postgres-analytics -U analytics_user -d analytics_db; do sleep 2; done
-        pg_basebackup -h postgres-analytics -U analytics_user -D /var/lib/postgresql/data -Fp -Xs -P -R
+        gosu postgres pg_basebackup -h postgres-analytics -U analytics_user -D /var/lib/postgresql/data -Fp -Xs -P -R
       fi
-      exec postgres -c hot_standby=on
+      exec gosu postgres postgres -c hot_standby=on
       "
     depends_on:
       postgres-analytics:
