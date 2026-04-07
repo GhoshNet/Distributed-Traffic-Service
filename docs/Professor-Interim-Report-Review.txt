@@ -1,0 +1,11 @@
+Dear Group J,
+Thanks for your interim report.
+Ther are a number of issues that I assume you have considered but are not manifest in the report:
+The geographic distribution of components is not clear – the system appears to be centralized.  I see no provision for eg partitioning the data.
+How is consistency for multi-national journeys addressed? More generally how do the regions cooperate?
+Again, reliability and consistency requirements are not obviously being addressed? Are you using transactions? Replication?
+How is the road map managed? Where does routing happen? 
+
+No need to reply (in fact best not to!)  – these are just issues that I would have expected to see explicitly addressed.
+Regards,
+Vinny
