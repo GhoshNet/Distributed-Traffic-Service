@@ -9,14 +9,22 @@ import jwt
 from fastapi import HTTPException, Security, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-JWT_SECRET = os.getenv("JWT_SECRET", "super-secret-jwt-key-change-in-production")
+_DEFAULT_SECRET = "super-secret-jwt-key-change-in-production"
+JWT_SECRET = os.getenv("JWT_SECRET", _DEFAULT_SECRET)
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 24
+
+if JWT_SECRET == _DEFAULT_SECRET:
+    import logging as _log
+    _log.getLogger(__name__).warning(
+        "JWT_SECRET is using the default value. "
+        "Set the JWT_SECRET environment variable before deploying to production."
+    )
 
 security = HTTPBearer()
 
 
-def create_access_token(user_id: str, email: str, license_number: str) -> tuple[str, int]:
+def create_access_token(user_id: str, email: str, license_number: str, role: str = "DRIVER") -> tuple[str, int]:
     """Create a JWT access token. Returns (token, expires_in_seconds)."""
     expires_delta = timedelta(hours=JWT_EXPIRATION_HOURS)
     expire = datetime.utcnow() + expires_delta
@@ -25,6 +33,7 @@ def create_access_token(user_id: str, email: str, license_number: str) -> tuple[
         "sub": user_id,
         "email": email,
         "license": license_number,
+        "role": role,
         "exp": expire,
         "iat": datetime.utcnow(),
     }
@@ -53,7 +62,20 @@ async def get_current_user(
         "user_id": payload["sub"],
         "email": payload["email"],
         "license": payload.get("license"),
+        "role": payload.get("role", "DRIVER"),
     }
+
+
+def require_role(required_role: str):
+    """Dependency generator that checks if the JWT has the required role."""
+    async def role_checker(current_user: dict = Depends(get_current_user)) -> dict:
+        if current_user.get("role") != required_role and current_user.get("role") != "ADMIN":
+            raise HTTPException(
+                status_code=403,
+                detail=f"Operation requires {required_role} role",
+            )
+        return current_user
+    return role_checker
 
 
 class OptionalAuth:

@@ -13,6 +13,8 @@ from datetime import datetime
 import aio_pika
 from aio_pika import Message, DeliveryMode, ExchangeType
 
+from shared.tracing import get_correlation_id, set_correlation_id
+
 logger = logging.getLogger(__name__)
 
 RABBITMQ_URL = os.getenv(
@@ -96,6 +98,7 @@ class MessageBroker:
             body=json.dumps(data, default=json_serializer).encode(),
             delivery_mode=DeliveryMode.PERSISTENT,
             content_type="application/json",
+            correlation_id=get_correlation_id(),
         )
 
         await self._exchange.publish(message, routing_key=routing_key)
@@ -132,6 +135,10 @@ class MessageBroker:
         async def _process_message(message: aio_pika.IncomingMessage):
             async with message.process():
                 try:
+                    # Restore correlation ID context for this event consumer
+                    if message.correlation_id:
+                        set_correlation_id(message.correlation_id)
+                        
                     data = json.loads(message.body.decode())
                     await callback(data, message.routing_key)
                 except Exception as e:
@@ -172,3 +179,53 @@ async def close_broker():
     if _broker:
         await _broker.close()
         _broker = None
+
+
+async def get_dlq_messages(limit: int = 10) -> list[dict]:
+    """Peek at messages currently in the dead-letter queue."""
+    broker = await get_broker()
+    if not broker._channel:
+        raise RuntimeError("Not connected to RabbitMQ.")
+    
+    queue = await broker._channel.declare_queue("dead_letter_queue", durable=True)
+    messages = []
+    for _ in range(limit):
+        try:
+            msg = await queue.get(timeout=0.1, no_ack=False)
+            messages.append({
+                "message_id": msg.message_id,
+                "routing_key": msg.routing_key,
+                "correlation_id": msg.correlation_id,
+                "body": msg.body.decode() if msg.body else None,
+            })
+            await msg.reject(requeue=True)
+        except aio_pika.exceptions.QueueEmpty:
+            break
+    return messages
+
+
+async def replay_dlq() -> int:
+    """Replay all messages from the DLQ back to the main exchange."""
+    broker = await get_broker()
+    if not broker._channel or not broker._exchange:
+         raise RuntimeError("Not connected to RabbitMQ.")
+         
+    queue = await broker._channel.declare_queue("dead_letter_queue", durable=True)
+    replayed = 0
+    while True:
+        try:
+            msg = await queue.get(timeout=0.1, no_ack=False)
+            # Keep original properties but strip DLQ specific headers if needed
+            new_msg = Message(
+                body=msg.body,
+                delivery_mode=msg.delivery_mode,
+                content_type=msg.content_type,
+                correlation_id=msg.correlation_id,
+            )
+            await broker._exchange.publish(new_msg, routing_key=msg.routing_key)
+            await msg.ack()
+            replayed += 1
+            logger.info(f"Replayed message with routing_key {msg.routing_key}")
+        except aio_pika.exceptions.QueueEmpty:
+            break
+    return replayed

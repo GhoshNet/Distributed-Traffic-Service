@@ -18,12 +18,16 @@ func main() {
 	log.SetFlags(log.LstdFlags)
 	log.Printf("[%s] starting up...", cfg.ServiceName)
 
-	initAuth(cfg.JWTSecret)
+	if err := initDB(cfg.DatabaseURL); err != nil {
+		log.Fatalf("Failed to connect to database: %v", err)
+	}
+	log.Println("Database tables created/verified")
 
 	if err := initRedis(cfg.RedisURL); err != nil {
-		log.Fatalf("Failed to connect to Redis: %v", err)
+		log.Printf("Warning: could not connect to Redis: %v", err)
+	} else {
+		log.Println("Connected to Redis")
 	}
-	log.Println("Connected to Redis")
 
 	if err := startConsumer(cfg.RabbitMQURL); err != nil {
 		log.Printf("Warning: could not connect to RabbitMQ: %v", err)
@@ -34,11 +38,11 @@ func main() {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(corsMiddleware)
-	r.Use(correlationIdMiddleware)
 
 	r.Get("/health", healthHandler)
-	r.Get("/api/notifications/", notificationsHandler)
-	r.Get("/ws/notifications/", wsHandler)
+	r.Get("/api/analytics/stats", statsHandler)
+	r.Get("/api/analytics/events", eventsHandler)
+	r.Get("/api/analytics/health/services", serviceHealthHandler)
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.Port,
@@ -60,19 +64,6 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	srv.Shutdown(ctx)
-}
-
-func correlationIdMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		reqId := r.Header.Get("X-Request-ID")
-		if reqId == "" {
-			reqId = r.Header.Get("X-Correlation-ID")
-		}
-		if reqId != "" {
-			w.Header().Set("X-Correlation-ID", reqId)
-		}
-		next.ServeHTTP(w, r)
-	})
 }
 
 func corsMiddleware(next http.Handler) http.Handler {

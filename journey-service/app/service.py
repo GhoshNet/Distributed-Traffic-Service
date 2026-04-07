@@ -2,14 +2,15 @@
 Journey Service - Business logic layer.
 """
 
+import os
 import uuid
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
 
-import redis.asyncio as redis_async
+import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, and_, or_, func
+from sqlalchemy import select, and_, func
 
 from .database import Journey, IdempotencyRecord
 from .saga import BookingSaga
@@ -23,10 +24,7 @@ from shared.schemas import (
 
 logger = logging.getLogger(__name__)
 
-# Redis for caching active journeys
-import os
-REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/1")
-redis_client = redis_async.from_url(REDIS_URL, decode_responses=True)
+USER_SERVICE_URL = os.getenv("USER_SERVICE_URL", "http://user-service:8000")
 
 
 class JourneyService:
@@ -50,8 +48,14 @@ class JourneyService:
                 # Return existing journey
                 return await JourneyService.get_journey(db, record.journey_id, user_id)
 
+        # Vehicle ownership verification
+        await JourneyService._verify_vehicle_ownership(
+            user_id, request.vehicle_registration
+        )
+
         journey_id = str(uuid.uuid4())
-        estimated_arrival = request.departure_time + timedelta(
+        departure_naive = request.departure_time.replace(tzinfo=None)
+        estimated_arrival = departure_naive + timedelta(
             minutes=request.estimated_duration_minutes
         )
 
@@ -65,10 +69,11 @@ class JourneyService:
             origin_lng=request.origin_lng,
             destination_lat=request.destination_lat,
             destination_lng=request.destination_lng,
-            departure_time=request.departure_time,
+            departure_time=departure_naive,
             estimated_duration_minutes=request.estimated_duration_minutes,
             estimated_arrival_time=estimated_arrival,
             vehicle_registration=request.vehicle_registration,
+            vehicle_type=request.vehicle_type.value,
             status=JourneyStatus.PENDING.value,
             idempotency_key=request.idempotency_key,
         )
@@ -87,24 +92,33 @@ class JourneyService:
         # Execute the booking saga
         final_status, rejection_reason = await BookingSaga.execute(journey)
 
-        # Update journey with saga result
-        journey.status = final_status.value
-        journey.rejection_reason = rejection_reason
-        await db.commit()
-        await db.refresh(journey)
-
         # Determine event type
         if final_status == JourneyStatus.CONFIRMED:
             event_type = EventType.JOURNEY_CONFIRMED
-            # Cache in Redis for enforcement service
-            await JourneyService._cache_active_journey(journey)
         else:
             event_type = EventType.JOURNEY_REJECTED
 
-        # Publish event asynchronously
-        await BookingSaga.publish_journey_event(journey, event_type)
+        # Update journey status AND write outbox event in the SAME transaction
+        # This is the transactional outbox pattern — guarantees the event is
+        # never lost even if RabbitMQ is temporarily unavailable.
+        journey.status = final_status.value
+        journey.rejection_reason = rejection_reason
+        await BookingSaga.save_outbox_event(db, journey, event_type)
+        await db.commit()
+        await db.refresh(journey)
 
         logger.info(f"Journey {journey_id} final status: {final_status.value}")
+
+        # Award points for confirmed bookings (immediate access)
+        if final_status == JourneyStatus.CONFIRMED:
+            try:
+                from .points import PointsService, POINTS_PER_BOOKING
+                await PointsService.earn_points(
+                    db, user_id, POINTS_PER_BOOKING,
+                    "BOOKING_CONFIRMED", journey_id
+                )
+            except Exception as e:
+                logger.warning(f"Failed to award booking points: {e}")
 
         return JourneyService._to_response(journey)
 
@@ -173,15 +187,21 @@ class JourneyService:
         if journey.status not in (JourneyStatus.CONFIRMED.value, JourneyStatus.PENDING.value):
             raise ValueError(f"Cannot cancel journey with status {journey.status}")
 
+        # Update status and write outbox event in the same transaction
         journey.status = JourneyStatus.CANCELLED.value
+        await BookingSaga.save_outbox_event(db, journey, EventType.JOURNEY_CANCELLED)
         await db.commit()
         await db.refresh(journey)
 
-        # Remove from Redis cache
-        await JourneyService._remove_cached_journey(journey)
-
-        # Publish cancellation event
-        await BookingSaga.publish_journey_event(journey, EventType.JOURNEY_CANCELLED)
+        # Deduct points for cancellation
+        try:
+            from .points import PointsService, POINTS_DEDUCTED_LATE_CANCEL
+            await PointsService.spend_points(
+                db, user_id, POINTS_DEDUCTED_LATE_CANCEL,
+                "LATE_CANCELLATION", journey_id
+            )
+        except Exception as e:
+            logger.warning(f"Could not deduct cancellation points: {e}")
 
         logger.info(f"Journey {journey_id} cancelled by user {user_id}")
         return JourneyService._to_response(journey)
@@ -231,50 +251,36 @@ class JourneyService:
         return [JourneyService._to_response(j) for j in journeys]
 
     # ==========================================
-    # Redis Caching for Enforcement
-    # ==========================================
-
-    @staticmethod
-    async def _cache_active_journey(journey: Journey):
-        """Cache confirmed journey in Redis for fast enforcement lookups."""
-        try:
-            import json
-            key = f"active_journey:vehicle:{journey.vehicle_registration}"
-            ttl = int((journey.estimated_arrival_time - datetime.utcnow()).total_seconds()) + 3600
-            if ttl > 0:
-                data = {
-                    "journey_id": journey.id,
-                    "user_id": journey.user_id,
-                    "origin": journey.origin,
-                    "destination": journey.destination,
-                    "departure_time": journey.departure_time.isoformat(),
-                    "estimated_arrival_time": journey.estimated_arrival_time.isoformat(),
-                    "vehicle_registration": journey.vehicle_registration,
-                    "status": journey.status,
-                }
-                await redis_client.setex(key, ttl, json.dumps(data))
-                # Also cache by user_id
-                user_key = f"active_journey:user:{journey.user_id}"
-                await redis_client.setex(user_key, ttl, json.dumps(data))
-                logger.debug(f"Cached active journey {journey.id} in Redis (TTL={ttl}s)")
-        except Exception as e:
-            logger.warning(f"Failed to cache journey in Redis: {e}")
-
-    @staticmethod
-    async def _remove_cached_journey(journey: Journey):
-        """Remove a journey from Redis cache."""
-        try:
-            await redis_client.delete(
-                f"active_journey:vehicle:{journey.vehicle_registration}",
-                f"active_journey:user:{journey.user_id}",
-            )
-            logger.debug(f"Removed journey {journey.id} from Redis cache")
-        except Exception as e:
-            logger.warning(f"Failed to remove journey from Redis: {e}")
-
-    # ==========================================
     # Helpers
     # ==========================================
+
+    @staticmethod
+    async def _verify_vehicle_ownership(user_id: str, vehicle_registration: str):
+        """Verify that the vehicle registration belongs to the user via user-service."""
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                response = await client.get(
+                    f"{USER_SERVICE_URL}/api/users/vehicles/verify/{vehicle_registration}",
+                    params={"user_id": user_id},
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    if not data.get("is_owner"):
+                        raise ValueError(
+                            f"Vehicle {vehicle_registration.upper()} is not registered to your account. "
+                            f"Please register it first in 'My Vehicles'."
+                        )
+                else:
+                    logger.warning(f"Vehicle verification returned {response.status_code}")
+                    raise ValueError("Could not verify vehicle ownership. Please try again.")
+        except httpx.ConnectError:
+            logger.error("Cannot connect to user-service for vehicle verification")
+            raise ValueError("Vehicle verification service unavailable. Please try again.")
+        except ValueError:
+            raise
+        except Exception as e:
+            logger.error(f"Vehicle verification error: {e}")
+            raise ValueError("Vehicle verification failed. Please try again.")
 
     @staticmethod
     def _to_response(journey: Journey) -> JourneyResponse:
@@ -291,6 +297,7 @@ class JourneyService:
             estimated_duration_minutes=journey.estimated_duration_minutes,
             estimated_arrival_time=journey.estimated_arrival_time,
             vehicle_registration=journey.vehicle_registration,
+            vehicle_type=journey.vehicle_type,
             status=JourneyStatus(journey.status),
             rejection_reason=journey.rejection_reason,
             created_at=journey.created_at,
