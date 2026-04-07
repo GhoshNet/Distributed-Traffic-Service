@@ -8,38 +8,104 @@
 
 ## Table of Contents
 
-1. [What This System Does](#1-what-this-system-does)
-2. [System Architecture](#2-system-architecture)
-3. [How Each Service Works](#3-how-each-service-works)
-4. [Distributed Systems Techniques](#4-distributed-systems-techniques)
-5. [Project File Structure](#5-project-file-structure)
-6. [Requirements](#6-requirements)
-7. [Setup — Local (no Docker)](#7-setup--local-no-docker)
-8. [Setup — Docker](#8-setup--docker)
-9. [Running the Demo](#9-running-the-demo)
+1. [Current Status](#1-current-status)
+2. [Distributed Systems Principles Coverage](#2-distributed-systems-principles-coverage)
+3. [Service Breakdown](#3-service-breakdown)
+4. [System Architecture](#4-system-architecture)
+5. [Infrastructure](#5-infrastructure)
+6. [Deployment](#6-deployment)
+7. [Prioritized Action Checklist](#7-prioritized-action-checklist)
+8. [Implementation Plan — Overnight Enhancements](#8-implementation-plan--overnight-enhancements)
+9. [Demo Script](#9-demo-script)
 10. [API Reference](#10-api-reference)
-11. [Testing & Failure Scenarios](#11-testing--failure-scenarios)
-12. [Load Testing](#12-load-testing)
-13. [How Booking Works End-to-End](#13-how-booking-works-end-to-end)
 
 ---
 
-## 1. What This System Does
+## 1. Current Status
 
-Imagine a world where every car journey must be booked in advance, like an airline ticket. This system is the backend that makes that possible, at global scale.
+| Service | State | Gaps |
+|---|---|---|
+| **User Service** | Clean, stateless, works. Primary/replica DB routing, JWT auth. | No Redis caching, no `user.registered` event published, no token blacklisting. |
+| **Journey Service** | Strongest service. Transactional outbox, saga orchestration, circuit breaker, partition detection, idempotency keys, `SELECT FOR UPDATE` on points ledger, background lifecycle scheduler. | Non-atomic scheduler commit, no saga compensation. |
+| **Conflict Service (Go)** | Functional, RabbitMQ consumer + DLQ properly set up. | Real race condition: capacity check → increment is not atomic. Two concurrent bookings to the same road segment can both pass. No distributed lock. |
+| **Notification Service (Go)** | Solid. WebSocket push, Redis-backed notification history, DLQ, auto-reconnect. | No deduplication — at-least-once delivery means duplicate notifications. WebSocket registry is in-memory only. |
+| **Enforcement Service** | Best caching story. Redis-first, fallback to journey-service HTTP, event-driven cache invalidation, partition staleness headers. | License→user_id lookup hits user-service synchronously every time. Cache is cold on startup. |
+| **Analytics Service (Go)** | Dual-write to Postgres + Redis. Health aggregator endpoint is real. | `hourly_stats` table scaffolded but never written. No event deduplication. Audit HMAC referenced but not implemented. |
 
-**Core flows:**
+**Infrastructure:** 3-node RabbitMQ cluster (broken — Erlang distribution not set up correctly in Docker), Redis Sentinel with replica, Postgres streaming replication per service, HAProxy + 2 nginx. The RabbitMQ cluster is the only infrastructure piece that doesn't actually work.
 
-| Who | What they can do |
-|-----|-----------------|
-| Driver | Register an account, log in, book a journey, cancel a journey, receive notifications |
-| System | Check for scheduling conflicts, reject double-bookings, track road capacity by area |
-| Enforcement agent | Scan a vehicle plate or driving licence and instantly see if the driver has a valid active booking |
-| Operator | View real-time statistics, event history, and health status of all services |
+**Overall verdict:** This is a legitimately distributed system, not a monolith with HTTP calls. The saga, outbox, circuit breaker, partition detection, and replication are real. The gap is at the edges — idempotency on consumers, compensation logic, and the broken RabbitMQ cluster undermining the HA story.
 
 ---
 
-## 2. System Architecture
+## 2. Distributed Systems Principles Coverage
+
+| Principle | Status | Where |
+|---|---|---|
+| Service decomposition | ✅ Demonstrated | 6 independent services, separate DBs |
+| Async messaging | ✅ Demonstrated | RabbitMQ topic exchange, routing keys |
+| Saga pattern | ✅ Demonstrated | journey-service orchestrates conflict check |
+| Transactional outbox | ✅ Demonstrated | journey-service outbox + background drain |
+| Circuit breaker | ✅ Demonstrated | `shared/circuit_breaker.py`, used by journey |
+| Read/write separation | ✅ Demonstrated | Primary + replica on users, journeys, analytics |
+| Pessimistic locking | ✅ Demonstrated | `SELECT FOR UPDATE` in points ledger |
+| Caching | ✅ Demonstrated | Enforcement Redis-first lookup |
+| Dead-letter queue | ✅ Demonstrated | All consumers, 24h TTL, proper DLX |
+| Correlation IDs / tracing | ✅ Demonstrated | `shared/tracing.py`, X-Request-ID propagated |
+| Rate limiting | ✅ Demonstrated | nginx: 3 zones (auth / booking / general) |
+| Health checks | ✅ Demonstrated | All services + analytics aggregator |
+| Graceful shutdown | ✅ Demonstrated | All services handle SIGTERM |
+| Partition detection | ⚠️ Partial | Detects partition, flags staleness — doesn't change behavior |
+| Database replication | ⚠️ Partial | Configured in compose; replica lag not exposed |
+| RabbitMQ clustering | ⚠️ Partial | Configured but Erlang distribution broken in Docker |
+| Redis HA (Sentinel) | ⚠️ Partial | Configured; app services don't use Sentinel URL |
+| Event sourcing / audit log | ⚠️ Partial | `event_logs` table exists; no dedup, HMAC incomplete |
+| Idempotency | ⚠️ Partial | journey-service has idempotency keys; consumers don't |
+| Eventual consistency | ⚠️ Partial | Claimed; no demo showing it recovering |
+| At-least-once delivery | ⚠️ Partial | Outbox guarantees publish; no consumer dedup |
+| Load balancing | ⚠️ Partial | HAProxy + nginx configured; no traffic to show it |
+| Compensating transactions | ❌ Missing | Saga rejects but never compensates/retries |
+| Distributed locking | ❌ Missing | Conflict-service capacity check is a race |
+| Leader election | ❌ Missing | — |
+| Backpressure | ❌ Missing | QoS=10 set but no rejection/throttling logic |
+| Distributed tracing (spans) | ❌ Missing | Correlation IDs exist; no span tree (no Jaeger/Zipkin) |
+| Idempotent consumers | ❌ Missing | Analytics, notification, conflict consumers all re-process |
+| Cache warming | ❌ Missing | Enforcement starts cold |
+| Rollup / aggregation jobs | ❌ Missing | `hourly_stats` never populated |
+
+---
+
+## 3. Service Breakdown
+
+### User Service (Python · :8001)
+Stateless, JWT-based auth. Routes reads to a Postgres replica, writes to primary. No events published on registration — the only service that does not participate in the event bus on the write side.
+
+### Journey Service (Python · :8002)
+The most complete distributed systems implementation in the project.
+
+- **Saga orchestration** — synchronously calls conflict-service to check slot availability before confirming a booking.
+- **Transactional outbox** — the `journey_events` row is written in the same DB transaction as the journey row; a background thread drains it to RabbitMQ. If RabbitMQ is down, the event is not lost.
+- **Circuit breaker** — wraps the conflict-service call via `shared/circuit_breaker.py`. After 3 failures the circuit opens; bookings fail fast rather than hanging.
+- **Partition detection** — `shared/partition.py` detects when the service cannot reach RabbitMQ or Postgres and flags responses with a `X-Partition-Detected` header.
+- **Idempotency keys** — clients supply an idempotency key; duplicate requests return the cached result.
+- **Points ledger** — `SELECT FOR UPDATE` prevents concurrent updates from corrupting the balance.
+- **Lifecycle scheduler** — background thread transitions journeys through `PENDING → ACTIVE → COMPLETED`.
+
+### Conflict Service (Go · :8003)
+Tracks road-segment capacity via a grid-cell model. Consumes `journey.cancelled` events to free slots. Has a proper RabbitMQ DLQ. **Known race condition:** capacity check and increment are two separate DB operations — concurrent bookings can both pass.
+
+### Notification Service (Go · :8004)
+WebSocket push to connected clients. Notification history in Redis (7-day TTL). DLQ on the RabbitMQ consumer. Auto-reconnect loop on broker failure. **Gap:** no event deduplication — redelivered messages produce duplicate notifications.
+
+### Enforcement Service (Python · :8005)
+Verifies active bookings by vehicle plate or driving licence. Redis-first with a TTL-based cache; on miss, calls journey-service over HTTP. Cache is invalidated via `journey.cancelled` events consumed from RabbitMQ. Adds `X-Cache-Stale` header when partition is detected. **Gap:** license→user_id resolution is synchronous to user-service on every request.
+
+### Analytics Service (Go · :8006)
+Dual-write to Postgres and Redis on every journey event. Exposes a `/health/services` endpoint that aggregates the health of all other services. **Gap:** `hourly_stats` table is never populated; no consumer deduplication.
+
+---
+
+## 4. System Architecture
 
 ```
                     ┌─────────────────────────────┐
@@ -48,8 +114,8 @@ Imagine a world where every car journey must be booked in advance, like an airli
                                    │ HTTP / WebSocket
                                    ▼
                     ┌──────────────────────────────┐
-                    │   Nginx API Gateway (:8080)   │  ← Docker mode only
-                    │  Rate limiting · Routing      │
+                    │   Nginx API Gateway (:8080)   │
+                    │  Rate limiting · JWT routing  │
                     └──┬──────┬──────┬──────┬──────┘
                        │      │      │      │
               ┌────────┘  ┌───┘  ┌───┘  ┌──┘
@@ -65,976 +131,419 @@ Imagine a world where every car journey must be booked in advance, like an airli
         ┌─────────┐       ▼              ▼
         │Postgres │  ┌─────────┐   ┌──────────────────────────┐
         │users_db │  │Postgres │   │       RabbitMQ           │
-        └─────────┘  │jrny_db  │   │  (Topic exchange)        │
-                     └─────────┘   │  journey_events          │
-                     ┌─────────┐   └──────────────────────────┘
-                     │Postgres │        ▲ publish       │ consume
-                     │cnflt_db │        │               ▼
-                     └─────────┘   Journey Svc   Notification Svc
-                     ┌─────────┐               + Conflict Svc
-                     │Postgres │               + Analytics Svc
-                     │anlyt_db │               + Enforcement Svc
-                     └─────────┘
-                     ┌─────────┐
-                     │  Redis  │  ← active journey cache (enforcement)
-                     └─────────┘    + notification history
-                                    + analytics counters
+        │+replica │  │jrny_db  │   │  topic exchange          │
+        └─────────┘  │+replica │   │  journey_events          │
+                     └─────────┘   └──────────────────────────┘
+                     ┌─────────┐        ▲ publish       │ consume
+                     │Postgres │        │               ▼
+                     │cnflt_db │   Journey Svc    Notification Svc
+                     └─────────┘   (outbox)     + Conflict Svc
+                     ┌─────────┐               + Analytics Svc
+                     │Postgres │               + Enforcement Svc
+                     │anlyt_db │
+                     │+replica │   ┌──────────────────────────┐
+                     └─────────┘   │  Redis (+ Sentinel)      │
+                                   │  enforcement cache        │
+                                   │  notification history     │
+                                   │  analytics counters       │
+                                   └──────────────────────────┘
 ```
 
-**Communication patterns:**
-
-- **Synchronous (REST):** Journey Service calls Conflict Service during booking to check for overlaps. Enforcement Service calls Journey Service as a cache-miss fallback.
-- **Asynchronous (RabbitMQ):** After a booking is confirmed, rejected, or cancelled, Journey Service publishes an event. Downstream services (Notification, Analytics, Conflict, Enforcement) consume it in the background.
-
----
-
-## 3. How Each Service Works
-
-### User Service (`user-service/`, port 8001)
-Handles driver accounts. Stores users in PostgreSQL with bcrypt-hashed passwords. Issues JWT tokens on login that are used by all other services to authenticate requests.
-
-### Journey Service (`journey-service/`, port 8002)
-The heart of the system. When a driver requests a booking:
-1. Creates the journey with status `PENDING` in the database
-2. Calls the Conflict Service synchronously (the "saga")
-3. If no conflict → marks `CONFIRMED`, caches the journey in Redis, publishes a `journey.confirmed` event
-4. If conflict or timeout → marks `REJECTED`, publishes a `journey.rejected` event
-
-Also handles cancellations and idempotency (safe retries using client-generated keys).
-
-### Conflict Detection Service (`conflict-service/`, port 8003)
-Called by the Journey Service for every booking. Runs three checks:
-1. **Driver time overlap** — Does the same driver have another journey at this time?
-2. **Vehicle time overlap** — Is the same vehicle already booked at this time?
-3. **Road capacity** — Does the origin or destination grid cell (~1 km²) exceed 100 bookings in the departure/arrival 30-minute slot?
-
-Also consumes `journey.cancelled` events from RabbitMQ to free up the booking slot.
-
-### Notification Service (`notification-service/`, port 8004)
-Consumes journey events from RabbitMQ and delivers notifications to drivers:
-- Stores the last 50 notifications per user in Redis (7-day TTL)
-- Pushes real-time updates to connected WebSocket clients
-- Exposes a REST endpoint to retrieve notification history
-
-### Enforcement Service (`enforcement-service/`, port 8005)
-Designed for sub-500ms responses at roadside checks. Uses a two-layer lookup:
-1. **Redis cache (primary)** — Journey Service writes active journeys here on confirmation. Sub-millisecond lookup by vehicle registration or user ID.
-2. **Journey Service API fallback** — On cache miss (e.g. after a Redis flush), queries Journey Service directly. Re-populates cache on hit.
-
-Supports lookup by vehicle registration plate OR driving licence number.
-
-### Analytics & Monitoring Service (`analytics-service/`, port 8006)
-Consumes all events from RabbitMQ and:
-- Logs every event to PostgreSQL for historical analysis
-- Maintains real-time daily counters in Redis (confirmed, rejected, cancelled today)
-- Exposes an aggregated health dashboard that pings all 6 services
-
----
-
-## 4. Distributed Systems Techniques
-
-| Technique | Implementation |
-|-----------|---------------|
-| **Saga Pattern** | Journey Service orchestrates a two-step booking: create PENDING → call Conflict Service → confirm or reject. If Conflict Service is unreachable (30s timeout), the saga compensates by rejecting the booking. The driver can safely retry. |
-| **Database-per-Service** | Each stateful service owns its own isolated PostgreSQL database. Services cannot directly query each other's data — they communicate only through APIs and events. |
-| **Event-Driven Messaging** | RabbitMQ topic exchange (`journey_events`). Journey Service publishes; Notification, Analytics, Conflict, and Enforcement Services subscribe. Messages are persistent (survive broker restart). |
-| **Dead-Letter Queue** | Failed messages (after processing errors) are routed to `dead_letter_queue` via `journey_events_dlx`. Keeps the main queue clean and allows manual inspection. |
-| **Redis Caching** | Active journeys cached by vehicle registration and user ID. TTL = journey arrival time + 1 hour. Enforcement Service reads cache first; falls back to API on miss. |
-| **Idempotency Keys** | Clients can send a unique key with each booking request. If the same key arrives twice (network retry), the same journey is returned without creating a duplicate. |
-| **Rate Limiting** | Nginx API Gateway enforces per-IP limits: 5 req/s on auth endpoints, 10 req/s on booking, 30 req/s general. Protects against abuse. |
-| **Load Balancing** | Nginx round-robin across service replicas (Docker mode). Unhealthy instances removed based on `/health` checks. |
-| **Geographic Partitioning** | Road capacity is tracked per ~1 km² grid cell (0.01° lat/lng resolution) per 30-minute time slot. Allows regional capacity checks to scale independently. |
-| **Health Checks** | Every service exposes `GET /health`. Docker uses this for automatic container restart. Analytics Service aggregates all health statuses into a single dashboard. |
-| **Crash-Recovery Model** | All state is in durable databases. Services can crash and restart at any time with no data loss. RabbitMQ consumers auto-reconnect on restart. |
-| **PostgreSQL Replication** | The journeys database uses streaming replication (WAL-based) with a hot standby read replica. Read-heavy queries (list journeys, enforcement lookups) are routed to the replica to offload the primary. The replica auto-recovers by replaying WAL on reconnect. |
-| **Redis Sentinel** | Redis runs with a replica and a Sentinel node for high availability. Sentinel monitors the primary, auto-promotes the replica on failure, and re-syncs the old primary when it returns. This ensures the enforcement cache survives Redis node failures. |
-| **Explicit Isolation Levels** | Each database engine has an explicitly configured transaction isolation level: **SERIALIZABLE** for the Conflict Service (prevents phantom reads during concurrent booking checks), **READ COMMITTED** for all others (sufficient due to idempotency keys, `SELECT FOR UPDATE`, and unique constraints). |
-| **Driver Points System** | Drivers earn points for bookings (+2) and completions (+10), lose points for cancellations (-5). Uses `SELECT FOR UPDATE` (pessimistic row-level locking) to prevent double-spending. An immutable transaction ledger provides full auditability. |
-| **Partition Detection & Handling** | Every service runs a `PartitionManager` that periodically probes its dependencies (DB, Redis, RabbitMQ, peer services). States: CONNECTED → SUSPECTED (1 failure) → PARTITIONED (3 failures) → MERGING (on heal). During partitions, operations are queued and replayed on merge. Enforcement returns cached data with an `X-Data-Staleness: STALE` header. |
-| **Replica Recovery** | After total failure: PostgreSQL recovers from persistent volumes, Redis recovers via AOF persistence, RabbitMQ replays durable queues. Admin endpoints allow forced outbox drain (`/admin/recovery/drain-outbox`), enforcement cache rebuild (`/admin/recovery/rebuild-enforcement-cache`), and audit chain verification (`/api/analytics/recovery/verify`). |
-
-### 4.1 Non-Functional Requirements — Motivation and Load Patterns
-
-The system requirements are quantitatively motivated by reference to realistic Irish traffic data and expected load patterns:
-
-**Historic data reference:**
-- Ireland has ~2.2 million registered vehicles (CSO 2024). Peak traffic occurs during weekday rush hours (07:00–09:00, 16:30–18:30), with approximately 40% of daily trips occurring in these windows.
-- Dublin city centre processes ~250,000 vehicle movements per day. At peak, this translates to ~4,200 movements per minute across all grid cells.
-- A nationwide deployment would need to handle ~500 bookings/second at peak (assuming 20% of daily trips are pre-booked in the first year).
-
-**Load pattern:**
-- **Diurnal pattern**: Traffic follows a bimodal distribution with morning and evening peaks. The system must handle 10× average load during peaks.
-- **Burst pattern**: Events (concerts, matches) cause localised spikes of 50× normal capacity in specific grid cells.
-- **Steady-state**: Off-peak hours see ~50 bookings/second nationwide.
-
-**Threshold justification:**
-
-| Requirement | Target | Motivation |
-|-------------|--------|-----------|
-| Enforcement p95 latency | < 500ms | Roadside checks must complete before a vehicle passes the checkpoint at typical urban speeds (30 km/h ≈ 8m/s). A 500ms window covers ~4m of travel, acceptable for fixed checkpoints. |
-| Booking saga timeout | 30s | Based on load test p99 of 800ms; 30s provides a 37× safety margin for worst-case Conflict Service latency under contention. |
-| Rate limits (auth) | 5 req/s per IP | Prevents brute-force login attacks while allowing legitimate users to retry failed logins. Based on OWASP recommendations for authentication endpoints. |
-| Rate limits (booking) | 10 req/s per IP | A single driver cannot realistically book more than 1 journey per minute. 10 req/s allows burst retries on failure while preventing abuse. |
-| Connection pool size | 20 + 10 overflow | Sized for 10 concurrent users per service instance at 2 queries per request, with 50% headroom. Load test confirmed no pool exhaustion at 10 users × 30s. |
-| Grid cell resolution | 0.01° (~1 km²) | Balances granularity (finer cells = better capacity control) against state overhead (coarser cells = fewer records). 1 km² matches typical urban traffic management zones. |
-| Road capacity limit | 100 bookings/cell/slot | Dublin city centre averages ~70 vehicles/km²/30min at peak. 100 provides 43% headroom for growth. |
-| Redis memory limit | 256 MB | Sufficient for ~500K cached journeys (each ~500 bytes). At 100K active journeys nationwide, uses ~50 MB — well within limits. |
-| RabbitMQ message TTL | 24 hours | Events older than 24h are no longer actionable (journey already completed or expired). Prevents queue unbounded growth during prolonged outages. |
-
-### 4.2 Consistency Model
-
-The system uses **eventual consistency** across services with **strong consistency** within each service's database boundary:
-
-- **Within a service**: ACID transactions with explicit isolation levels. The Conflict Service uses SERIALIZABLE to prevent booking phantoms. The Journey Service uses READ COMMITTED with `SELECT FOR UPDATE` for points operations.
-- **Across services**: Asynchronous event propagation via RabbitMQ. The transactional outbox pattern guarantees at-least-once delivery. Consumers are idempotent (the enforcement consumer checks journey_id, the points service checks journey_id + reason).
-- **Update strategy**: Last-Writer-Wins (LWW) with logical timestamps for conflict resolution during partition merges. The analytics HMAC audit chain detects event reordering or loss.
-
-### 4.3 Partition Handling — Detailed Design
-
-**N partitions without majority partition:**
-Since the Conflict Service is the single authority for booking slot allocation (no replicas, no quorum), a partition that isolates it from the Journey Service causes all new bookings to be **rejected** (safe default — no split-brain double-booking). This is a deliberate design choice: safety over availability for the booking path.
-
-**What happens during a partition:**
-
-| Scenario | Behaviour |
-|----------|-----------|
-| Conflict Service unreachable | Journey Service rejects bookings (saga compensation). Circuit breaker opens after 3 failures, fast-failing for 30s. |
-| Redis unreachable | Enforcement falls back to Journey Service API. Notification history unavailable but new notifications are queued in RabbitMQ. |
-| RabbitMQ unreachable | Outbox events accumulate in PostgreSQL. Published on reconnect (at-least-once). No data loss. |
-| Journey DB unreachable | Journey Service returns HTTP 500. Enforcement serves from Redis cache with `X-Data-Staleness: STALE` header. |
-| All infrastructure down | Services return errors. All state persists on Docker volumes. Full recovery on restart with no data loss. |
-
-**Merging of partitions:**
-When connectivity is restored:
-1. The `PartitionManager` detects probe success and transitions to MERGING state.
-2. Queued operations from the partition period are replayed in order.
-3. The outbox publisher drains accumulated events to RabbitMQ.
-4. The enforcement cache is rebuilt from the journeys database if needed.
-5. The analytics audit chain can be verified to detect any data loss during the partition.
-
-### 4.4 Replica Recovery
-
-**PostgreSQL streaming replica:**
-- The journeys DB read replica uses WAL-based streaming replication.
-- On replica crash: it automatically reconnects and replays missed WAL segments from the primary.
-- On primary crash: the replica has a full copy of data. Manual failover is possible.
-
-**Redis Sentinel failover:**
-- Sentinel monitors the Redis primary with a 5-second down-after-milliseconds timeout.
-- On primary failure: Sentinel promotes the replica to primary within ~10 seconds.
-- On old primary recovery: it joins as a replica and syncs from the new primary.
-
-**Service-level recovery:**
-- Services auto-reconnect to PostgreSQL, Redis, and RabbitMQ on startup.
-- The outbox publisher drains any backlog accumulated during downtime.
-- Admin can force-drain via `POST /admin/recovery/drain-outbox`.
-- Enforcement cache can be rebuilt via `POST /admin/recovery/rebuild-enforcement-cache`.
-- Audit chain integrity verified via `POST /api/analytics/recovery/verify`.
-
----
-
-## 5. Project File Structure
+**Request path for journey booking:**
 
 ```
-Excercise2/
-├── api-gateway/
-│   └── nginx.conf              # Nginx routing, rate limits, WebSocket proxy
-│
-├── user-service/
-│   ├── app/
-│   │   ├── main.py             # FastAPI app, lifespan (DB init, RabbitMQ connect)
-│   │   ├── routes.py           # HTTP endpoints: /register, /login, /me, /license/{n}
-│   │   ├── service.py          # Business logic: register, login, get profile
-│   │   ├── database.py         # SQLAlchemy User model + async engine
-│   │   └── __init__.py
-│   ├── Dockerfile
-│   └── requirements.txt
-│
-├── journey-service/
-│   ├── app/
-│   │   ├── main.py             # FastAPI app
-│   │   ├── routes.py           # POST/GET/DELETE journeys, vehicle active lookup
-│   │   ├── service.py          # CRUD, Redis caching, idempotency
-│   │   ├── saga.py             # BookingSaga: conflict check + event publishing
-│   │   ├── database.py         # Journey + IdempotencyRecord + DriverPoints models
-│   │   ├── points.py           # Driver points with SELECT FOR UPDATE double-spend prevention
-│   │   └── __init__.py
-│   ├── Dockerfile
-│   └── requirements.txt
-│
-├── conflict-service/
-│   ├── app/
-│   │   ├── main.py             # FastAPI app + starts RabbitMQ consumer
-│   │   ├── routes.py           # POST /check, POST /cancel/{id}
-│   │   ├── service.py          # 3 conflict checks + slot recording
-│   │   ├── consumer.py         # Listens for journey.cancelled → deactivates slots
-│   │   ├── database.py         # BookedSlot + RoadSegmentCapacity models
-│   │   └── __init__.py
-│   ├── Dockerfile
-│   └── requirements.txt
-│
-├── notification-service/
-│   ├── app/
-│   │   ├── main.py             # FastAPI app + WebSocket endpoint + REST history
-│   │   ├── consumer.py         # RabbitMQ consumer → Redis store + WebSocket push
-│   │   └── __init__.py
-│   ├── Dockerfile
-│   └── requirements.txt
-│
-├── enforcement-service/
-│   ├── app/
-│   │   ├── main.py             # FastAPI app + 2 verify endpoints
-│   │   ├── service.py          # Redis-first lookup + Journey Service fallback
-│   │   └── __init__.py
-│   ├── Dockerfile
-│   └── requirements.txt
-│
-├── analytics-service/
-│   ├── app/
-│   │   ├── main.py             # FastAPI app + stats/events/health endpoints
-│   │   ├── consumer.py         # Consumes all events → PostgreSQL + Redis counters
-│   │   ├── database.py         # EventLog + HourlyStats models
-│   │   └── __init__.py
-│   ├── Dockerfile
-│   └── requirements.txt
-│
-├── shared/                     # Shared library (copied into each Docker image)
-│   ├── __init__.py
-│   ├── auth.py                 # JWT create/decode, FastAPI dependency
-│   ├── config.py               # Logging setup, Settings base class
-│   ├── messaging.py            # RabbitMQ client (connect, publish, subscribe, DLQ)
-│   ├── schemas.py              # All Pydantic models shared between services
-│   ├── circuit_breaker.py      # Async circuit breaker (CLOSED → OPEN → HALF-OPEN)
-│   ├── tracing.py              # Correlation IDs for distributed tracing
-│   ├── partition.py            # Network partition detection, handling, merge reconciliation
-│   └── recovery.py             # Replica recovery: cache rebuild, outbox drain, audit verify
-│
-├── scripts/
-│   ├── run_local.sh            # Start/stop/status all 6 services locally
-│   ├── demo_local.py           # End-to-end demo using direct ports (local mode)
-│   ├── demo.py                 # End-to-end demo using API Gateway (Docker mode)
-│   ├── failure_tests.py        # 4 failure scenario tests (Docker mode)
-│   └── load_test.py            # Concurrent load test with latency stats
-│
-├── docker-compose.yml          # Full orchestration: 6 services + 4 DBs + Redis + RabbitMQ
-├── docker-compose.test.yml     # Override: faster health checks for failure testing
-└── README.md                   # This file
+Client → nginx → journey-service
+  → conflict-service (REST, saga)
+  ← conflict approved
+  → DB: write journey + outbox row (same transaction)
+  → background: drain outbox → RabbitMQ
+  → notification-service (WebSocket push)
+  → analytics-service (stats update)
+  → enforcement-service (cache update)
 ```
 
 ---
 
-## 6. Requirements
+## 5. Infrastructure
 
-### Python packages (same across all services)
-
-Each service has its own `requirements.txt`. Here is the complete combined list:
-
-```
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
-sqlalchemy[asyncio]==2.0.35
-asyncpg==0.30.0
-alembic==1.13.3
-pydantic==2.9.2
-pydantic-settings==2.5.2
-passlib[bcrypt]==1.7.4
-bcrypt==4.2.0
-PyJWT==2.9.0
-redis==5.1.1
-aio-pika==9.4.3
-httpx==0.27.2
-python-multipart==0.0.12
-websockets==13.1
-```
-
-> **Note:** `passlib`, `bcrypt`, and `alembic` are only used by the services that need them, but installing all packages in one conda environment is the simplest approach.
-
-### Infrastructure
-
-| Service | Version | Purpose |
-|---------|---------|---------|
-| PostgreSQL | 16 | Persistent storage for Users, Journeys, Conflicts, Analytics |
-| Redis | 7 | Active journey cache, notification history, analytics counters |
-| RabbitMQ | 3.13 | Async message broker between services |
-| Nginx | 1.25 | API Gateway — routing, rate limiting, load balancing (Docker only) |
-| Python | 3.12 | All 6 microservices |
+| Component | Config | Status |
+|---|---|---|
+| RabbitMQ | 3-node cluster, topic exchange, DLX/DLQ per queue | Cluster broken in Docker (Erlang distribution); single node works |
+| Redis | Primary + 1 replica + Sentinel | Sentinel running; services connect directly to `:6379`, not Sentinel URL |
+| Postgres | Per-service primary + streaming replica | Replication configured; replica lag not surfaced to clients |
+| nginx | 2 instances, rate limiting (3 zones), JWT routing | Working |
+| HAProxy | Front of nginx | Working |
 
 ---
 
-## 7. Setup — Local (no Docker)
+## 6. Deployment
 
-This runs all 6 services as native Python processes. Requires macOS with Homebrew. For Linux, replace `brew` commands with `apt` equivalents.
+**Recommended: Docker Compose on two machines.**
 
-### Step 1 — Create the conda environment
-
-```bash
-conda create -n DS python=3.12 -y
-conda activate DS
-```
-
-### Step 2 — Install infrastructure with Homebrew
+Split the compose into two files — `infra.yml` (RabbitMQ, Redis, Postgres) on machine A and `services.yml` (app services) on machine B. Set the host IP of machine A in service env vars. Kill machine A mid-demo to show circuit breaker and outbox behaviour.
 
 ```bash
-brew install postgresql@16 redis rabbitmq
+# Machine A — infrastructure
+docker compose -f infra.yml up -d
+
+# Machine B — services (set RABBITMQ_URL, REDIS_URL, DATABASE_URL to machine A's IP)
+docker compose -f services.yml up -d
 ```
 
-Start the services (and configure them to restart automatically at login):
+**Alternatives:**
+
+| Option | Pros | Cons |
+|---|---|---|
+| Railway free tier | Real distributed deployment, public URLs, 6 services fit the free tier | Cold starts |
+| fly.io | Better always-on free tier, small Go binaries | Python services need more RAM |
+| minikube / k3s | Readiness/liveness probes, rolling deploys, namespaces | Hard to set up |
+
+**Avoid:** Do not attempt to make the 3-node RabbitMQ cluster work in Docker Compose — Erlang cookie synchronisation and hostname resolution are unreliable on the Docker bridge network without a dedicated init script. A single RabbitMQ node demonstrates all messaging principles just as well.
+
+**Start everything locally:**
 
 ```bash
-brew services start postgresql@16
-brew services start redis
-brew services start rabbitmq
+docker compose up -d
 ```
 
-Verify they are running:
+Wait ~30s for all services to be healthy, then verify:
 
 ```bash
-brew services list
-# postgresql@16   started
-# redis           started
-# rabbitmq        started
-```
-
-### Step 3 — Create PostgreSQL databases and users
-
-Each microservice gets its own isolated database. Run this once:
-
-```bash
-export PATH="/opt/homebrew/opt/postgresql@16/bin:$PATH"
-
-psql -U $(whoami) postgres << 'EOF'
-CREATE USER users_user     WITH PASSWORD 'users_pass';
-CREATE USER journeys_user  WITH PASSWORD 'journeys_pass';
-CREATE USER conflicts_user WITH PASSWORD 'conflicts_pass';
-CREATE USER analytics_user WITH PASSWORD 'analytics_pass';
-
-CREATE DATABASE users_db     OWNER users_user;
-CREATE DATABASE journeys_db  OWNER journeys_user;
-CREATE DATABASE conflicts_db OWNER conflicts_user;
-CREATE DATABASE analytics_db OWNER analytics_user;
-
-GRANT ALL PRIVILEGES ON DATABASE users_db     TO users_user;
-GRANT ALL PRIVILEGES ON DATABASE journeys_db  TO journeys_user;
-GRANT ALL PRIVILEGES ON DATABASE conflicts_db TO conflicts_user;
-GRANT ALL PRIVILEGES ON DATABASE analytics_db TO analytics_user;
-EOF
-```
-
-### Step 4 — Configure RabbitMQ
-
-Create a dedicated virtual host and admin user (run this once):
-
-```bash
-export PATH="/opt/homebrew/opt/rabbitmq/sbin:$PATH"
-
-rabbitmqctl add_vhost journey_vhost
-rabbitmqctl add_user journey_admin journey_pass
-rabbitmqctl set_permissions -p journey_vhost journey_admin ".*" ".*" ".*"
-rabbitmqctl set_user_tags journey_admin administrator
-```
-
-You can verify via the RabbitMQ Management UI at [http://localhost:15672](http://localhost:15672) (login: `journey_admin` / `journey_pass`).
-
-### Step 5 — Install Python dependencies
-
-```bash
-conda run -n DS pip install \
-  fastapi==0.115.0 \
-  "uvicorn[standard]==0.30.6" \
-  "sqlalchemy[asyncio]==2.0.35" \
-  asyncpg==0.30.0 \
-  alembic==1.13.3 \
-  "pydantic==2.9.2" \
-  "pydantic-settings==2.5.2" \
-  "passlib[bcrypt]==1.7.4" \
-  "bcrypt==4.2.0" \
-  PyJWT==2.9.0 \
-  "redis==5.1.1" \
-  "aio-pika==9.4.3" \
-  httpx==0.27.2 \
-  python-multipart==0.0.12 \
-  websockets==13.1
-```
-
-### Step 6 — Start all 6 services
-
-From the project root:
-
-```bash
-bash scripts/run_local.sh start
-```
-
-This starts each service in the background (logs written to `logs/<service-name>.log`). You should see:
-
-```
-Starting Journey Booking System (local mode)...
-  [user-service]        Starting on port 8001
-  [conflict-service]    Starting on port 8003
-  [analytics-service]   Starting on port 8006
-  [notification-service] Starting on port 8004
-  [enforcement-service] Starting on port 8005
-  [journey-service]     Starting on port 8002
-```
-
-### Step 7 — Verify everything is healthy
-
-```bash
-bash scripts/run_local.sh status
-```
-
-Or check each service manually:
-
-```bash
-curl http://localhost:8001/health   # user-service
-curl http://localhost:8002/health   # journey-service
-curl http://localhost:8003/health   # conflict-service
-curl http://localhost:8004/health   # notification-service
-curl http://localhost:8005/health   # enforcement-service
-curl http://localhost:8006/health   # analytics-service
-```
-
-Each should return `{"status": "healthy", ...}`.
-
-### Step 8 — Run the demo
-
-```bash
-conda run -n DS python scripts/demo_local.py
-```
-
-### Stopping everything
-
-```bash
-bash scripts/run_local.sh stop
-```
-
-### Viewing logs
-
-```bash
-bash scripts/run_local.sh logs user-service      # tail user-service log
-bash scripts/run_local.sh logs journey-service   # tail journey-service log
-# etc.
-
-# Or view all logs at once:
-tail -f logs/*.log
-```
-
-### Restarting a single service (e.g. after a code change)
-
-```bash
-bash scripts/run_local.sh stop
-# Make your changes
-bash scripts/run_local.sh start
+curl http://localhost:8080/api/analytics/health/services | jq
 ```
 
 ---
 
-## 8. Setup — Docker
+## 7. Prioritized Action Checklist
 
-If Docker Desktop is installed, the entire system (including all databases, Redis, and RabbitMQ) runs in containers automatically. No manual database setup is needed.
+### Critical — System feels broken or unconvincingly distributed without these
 
-### Start everything
+- [ ] **Fix RabbitMQ cluster** — Remove `rabbitmq-2`/`rabbitmq-3` or fix the clustering script. Single node is honest; a broken cluster is worse than no cluster.
+- [ ] **Conflict-service: atomic capacity check** — Replace the check → increment sequence with `SELECT FOR UPDATE` or a Redis `SETNX` lock keyed on `user_id:departure_time`. Two concurrent bookings on the same segment both pass today.
+- [ ] **Analytics: idempotent consumers** — Track processed event IDs in Redis. Every RabbitMQ redelivery currently doubles event counts.
+- [ ] **Wire services to Redis Sentinel URL** — Sentinel is running but services connect directly to `redis:6379`. Failover does nothing because clients don't reconnect to the new primary.
+
+### High impact, low effort
+
+- [ ] **Analytics: periodic rollup job** — `hourly_stats` is wired up but empty. 50 lines of Go adds a real time-series aggregation story.
+- [ ] **Notification: consumer idempotency** — Mirror the analytics fix; prevents duplicate notifications on redelivery.
+- [ ] **User Service: publish `user.registered` event** — The only service that doesn't publish events; closes the event bus gap.
+- [ ] **Enforcement: cache license → user_id in Redis** — Every `/verify/license` call hits user-service synchronously; one `SET`/`GET` eliminates this.
+- [ ] **Journey: compensating transaction on saga failure** — If conflict-service is down, journeys are rejected and never retried. Add a `RETRY` status and a backoff task.
+- [ ] **Conflict-service: Redis distributed lock (`SETNX`)** — Demonstrably prevents the double-booking race condition.
+- [ ] **All consumers: DLQ reprocessing endpoint** — An admin endpoint that drains the DLQ and requeues messages shows you understand poison messages.
+
+### High impact, higher effort
+
+- [ ] **OpenTelemetry + Jaeger** — Correlation IDs exist but there is no span tree. Adding OTEL + Jaeger (free, runs in Docker) gives a visual proof of request paths across services. Single biggest demo upgrade.
+- [ ] **Persist partition queue to Redis** — The in-memory partition queue in journey-service is lost on restart; persisting it makes the partition recovery story real.
+- [ ] **Readiness vs liveness probes** — Split `/health` into `/health/live` and `/health/ready` (ready = dependencies connected).
+
+### Nice to have
+
+- [ ] **Token blacklisting on logout** — Redis `SET` on logout, check on every request.
+- [ ] **Enforcement: circuit breaker on user-service call** — `shared/circuit_breaker.py` already exists; wire it in.
+- [ ] **Remove `version: '3.8'` from compose** — Eliminates the deprecation warning on every `docker compose` command.
+
+### Suggested additions not on the wishlist
+
+**Chaos testing** — A 5-line bash loop that `docker stop`s a random service every 30s and restarts it after 10s proves your circuit breakers, auto-reconnect, and outbox actually work under failure. This is the single most impressive demo technique.
 
 ```bash
-cd Excercise2
-docker compose up --build -d
+while true; do
+  svc=$(docker compose ps --services | shuf -n 1)
+  docker compose stop "$svc" && sleep 10 && docker compose start "$svc"
+  sleep 30
+done
 ```
 
-Wait about 30 seconds for all services to pass their health checks:
+**Idempotency key propagation across the saga** — Journey-service deduplicates on idempotency key, but conflict-service gets a second HTTP call with a different journey ID on retry. Forwarding the idempotency key through the saga makes the whole flow truly idempotent end-to-end.
 
-```bash
-docker compose ps
-# All services should show "healthy"
-```
+**Versioned event contracts** — Add a `"schema_version": 1` field to events and show what happens when a consumer gets a v2 event it doesn't understand. Demonstrates evolutionary schemas, one of the hardest real-world distributed problems.
 
-### Check logs
+**Backpressure demo** — Add an `/admin/pause` endpoint to analytics that sets `prefetch=0` (pauses consumption), lets messages queue up in RabbitMQ, then resumes. Live demo of backpressure using QoS.
 
-```bash
-docker compose logs -f journey-service     # Follow journey-service logs
-docker compose logs --tail=50 conflict-service
-```
-
-### Stop
-
-```bash
-docker compose down        # Stop containers (data is preserved in volumes)
-docker compose down -v     # Stop containers AND delete all data
-```
+**Blue-green deploy** — Add an `analytics-service-v2` entry to compose pointing at the same image with a different config, and show nginx switching between them without downtime.
 
 ---
 
-## 9. Running the Demo
+## 8. Implementation Plan — Overnight Enhancements
 
-The demo exercises the full booking lifecycle automatically.
+These are high-impact changes scoped for a single overnight session. Each builds on the existing codebase without infrastructure overhauls.
 
-### Local mode
+### Phase 1 — Distributed Trace Propagation (Cross-Language)
+
+Building on existing `shared/tracing.py` and `CorrelationIDMiddleware`.
+
+**Python services (User, Journey, Enforcement)**
+
+Goal: ensure `X-Correlation-ID` is propagated in all outgoing `httpx` and `aio-pika` calls.
+
+- Update `shared/messaging.py` to always set `correlation_id` from the current context when publishing.
+- Add a helper to inject the ID into `httpx.AsyncClient` headers for inter-service calls (used by journey→conflict and enforcement→user calls).
+
+**Go services (Conflict, Notification, Analytics)**
+
+Goal: equivalent tracing in Go.
+
+- Create a `shared/tracing` Go package (this does not exist yet).
+- Implement a `chi` middleware that extracts `X-Correlation-ID` from incoming requests and sets it on the context.
+- Inject the ID into `log.Printf` output and into RabbitMQ consumer message metadata for cross-service log correlation.
+
+**Dependencies:** None new — `chi` is already used in all Go services.
+
+---
+
+### Phase 2 — Resilience and Retries
+
+**Python — add `tenacity` retries**
+
+- **Journey Service:** Wrap the synchronous conflict-service HTTP call with `@retry(stop=stop_after_attempt(3), wait=wait_exponential())`. This handles transient timeouts without opening the circuit breaker immediately.
+- **User Service:** Add retry logic around the DB connection initialization on startup so the service waits for Postgres rather than exiting.
+
+**Go — startup retry loop**
+
+- **Conflict Service:** Replace the single-attempt `sql.Open` at startup with a retry loop (up to 10 attempts, 2s backoff). Standard Go pattern, no library needed.
+- **Notification Service:** Add retry logic in the RabbitMQ consumer's `ack` call — if the broker restarts mid-delivery the channel is closed; reconnect and nack rather than panic.
+
+**Dependencies:** Add `tenacity` to Python `requirements.txt` (already present in some services — verify before adding).
+
+---
+
+### Phase 3 — Outbox Pattern Completeness
+
+> **Note:** The journey service already has a transactional outbox — `journey_events` table written in the same DB transaction as the journey row, drained by a background thread. This phase is not about adding the outbox; it is about closing gaps in the existing implementation.
+
+**Gaps to close:**
+
+- The background drain thread commits each event in a separate DB transaction from the RabbitMQ publish. If the process crashes after publish but before the DB commit, the event is re-published on restart (at-least-once is preserved but the gap should be documented).
+- Add a `published_at` timestamp column to `journey_events` so you can query unpublished events on startup and drain them immediately rather than waiting for the poll interval.
+- Store event payloads as JSON directly in the `payload` column (already the case — confirm this is consistent across all event types).
+
+**If extending to other services:** Apply the same outbox pattern to the user-service for the `user.registered` event (Phase 1 of the action checklist).
+
+---
+
+### Phase 4 — Idempotency on User Registration
+
+**User Service:** Add a duplicate-registration guard.
+
+- On `POST /register`, before inserting, check if a row with the same `license_number` or `email` already exists.
+- If it does and an `Idempotency-Key` header is present, return `200 OK` with the existing user rather than `409 Conflict`. This makes the endpoint safe to retry.
+- If no idempotency key is present, return `409` as today.
+
+This is a DB-level check, no new infrastructure needed. Use `INSERT ... ON CONFLICT DO NOTHING RETURNING *` and check whether a row was returned.
+
+---
+
+### Open Questions
+
+- **Outbox payload format:** Storing event payloads as JSON directly in the `outbox` table column is recommended. This is already the case in journey-service — confirm consistency.
+- **`tenacity` dependency:** Already present in journey-service `requirements.txt`. Check user-service and enforcement-service before adding again to avoid version conflicts.
+- **Go retry library:** `avast/retry-go` is one option but standard Go retry loops are sufficient here and add no dependency. Prefer the standard pattern.
+
+---
+
+## 9. Demo Script
+
+Run these steps in order — each proves a specific distributed systems principle. Total time: ~17 minutes. Stop after step 4 if time is short; the outbox demo is the most impressive single thing in the project.
+
+### Step 1 — Show the architecture is alive (2 min)
 
 ```bash
-conda run -n DS python scripts/demo_local.py
+curl http://localhost:8080/api/analytics/health/services | jq
 ```
 
-### Docker mode
+Point at: multiple independent services, each with its own DB. Open the RabbitMQ management UI at `http://localhost:15672` — show exchanges, queues, and consumers connected.
+
+**Principle demonstrated:** Service decomposition, independent deployability.
+
+---
+
+### Step 2 — Register, log in, book a journey — trace the saga (3 min)
 
 ```bash
-conda run -n DS python scripts/demo.py
+# Register
+curl -X POST http://localhost:8080/api/users/register \
+  -H "Content-Type: application/json" \
+  -d '{"username":"demo","email":"demo@example.com","password":"password123","license_number":"ABC123"}'
+
+# Login
+TOKEN=$(curl -s -X POST http://localhost:8080/api/users/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"demo","password":"password123"}' | jq -r .token)
+
+# Book a journey
+curl -X POST http://localhost:8080/api/journeys/ \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: demo-booking-001" \
+  -d '{"start_location":"Dublin","end_location":"Cork","departure_time":"2025-06-01T09:00:00Z","route_points":[[53.3498,-6.2603],[51.8985,-8.4756]]}'
 ```
 
-### What the demo does (11 steps)
+Open two terminals watching logs:
 
-| Step | Action | Expected result |
-|------|--------|----------------|
-| 1 | Health check all services | All 6 show healthy |
-| 2 | Register Alice and Bob | 201 Created |
-| 3 | Login as Alice and Bob | JWT tokens returned |
-| 4 | Alice books Dublin → Cork (vehicle 221-D-12345) | Status: CONFIRMED |
-| 5 | Alice tries to book again with same vehicle, overlapping time | Status: REJECTED (conflict detected) |
-| 6 | Bob books Limerick → Waterford (different vehicle) | Status: CONFIRMED |
-| 7 | Enforcement verifies vehicle 221-D-12345 | Valid booking found |
-| 8 | Enforcement checks a non-booked vehicle (999-XX-99999) | No active booking |
-| 9 | Alice lists her journeys | 2 journeys shown (1 confirmed, 1 rejected) |
-| 10 | Alice cancels her confirmed journey | Status: CANCELLED |
-| 11 | Check notifications and analytics | 3 notifications + event stats |
+```bash
+docker compose logs -f journey-service
+docker compose logs -f conflict-service
+```
 
-> **Note on enforcement timing:** Enforcement checks only return a valid booking if the journey departs within the next 30 minutes, or is already in progress. A journey booked 2 hours in advance will not show as "active" until close to its departure time. This is intentional — enforcement checks are for vehicles currently on the road.
+Show journey-service calling conflict-service over REST (saga call), receiving approval, then writing the DB row.
 
-> **Note on re-running the demo:** The demo uses unique idempotency keys on each run, so it creates new journeys every time. Vehicle bookings from previous runs persist in the Conflict Service database. If you re-run the demo and see Bob's journey rejected, it is because that vehicle already has a confirmed booking from the previous run at the same departure time — which is exactly the conflict detection working correctly.
+**Principle demonstrated:** Saga pattern, synchronous coordination.
+
+---
+
+### Step 3 — Show async event fan-out (2 min)
+
+After the booking completes:
+
+```bash
+docker compose logs -f notification-service analytics-service
+```
+
+Both services received the same `journey.confirmed` event from RabbitMQ. Show the stats endpoint updating:
+
+```bash
+curl http://localhost:8080/api/analytics/stats | jq
+```
+
+**Principle demonstrated:** Async messaging, publish-subscribe, eventual consistency.
+
+---
+
+### Step 4 — Kill RabbitMQ, book a journey, restart RabbitMQ (3 min)
+
+```bash
+docker compose stop rabbitmq
+
+# Book a journey via the API — it succeeds (outbox buffers the event)
+curl -X POST http://localhost:8080/api/journeys/ \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: demo-booking-002" \
+  -d '{"start_location":"Dublin","end_location":"Galway","departure_time":"2025-06-02T10:00:00Z","route_points":[[53.3498,-6.2603],[53.2707,-9.0568]]}'
+
+docker compose start rabbitmq
+
+# Watch the outbox drain
+docker compose logs -f journey-service | grep outbox
+```
+
+The journey was booked, the event was written to the outbox in the same DB transaction, and when RabbitMQ came back the event was delivered.
+
+**Principle demonstrated:** Transactional outbox, at-least-once delivery, durability.
+
+---
+
+### Step 5 — Kill conflict-service, show circuit breaker opening (2 min)
+
+```bash
+docker compose stop conflict-service
+
+# Try to book 3 journeys — each fails fast after the circuit opens
+# (check logs for circuit state transitions)
+docker compose logs journey-service | grep "circuit"
+
+docker compose start conflict-service
+# Next booking succeeds — circuit half-opens, probes, then closes
+```
+
+**Principle demonstrated:** Circuit breaker, fail-fast, self-healing.
+
+---
+
+### Step 6 — Show enforcement cache (2 min)
+
+```bash
+# First call: cache miss, calls user-service
+curl http://localhost:8080/api/enforcement/verify/license/ABC123 -H "Authorization: Bearer $TOKEN"
+
+# Second call: sub-millisecond Redis cache hit (check X-Cache header)
+curl -v http://localhost:8080/api/enforcement/verify/license/ABC123 -H "Authorization: Bearer $TOKEN"
+
+# Cancel the journey, watch cache invalidation via event
+curl -X DELETE http://localhost:8080/api/journeys/<journey_id> -H "Authorization: Bearer $TOKEN"
+curl http://localhost:8080/api/enforcement/verify/license/ABC123 -H "Authorization: Bearer $TOKEN"
+```
+
+**Principle demonstrated:** Caching, cache invalidation via events, eventual consistency.
+
+---
+
+### Step 7 — Show read replicas (1 min)
+
+Point at the `DATABASE_READ_URL` env vars in the compose file. Show the replica has the same data by querying it directly:
+
+```bash
+docker exec -it <postgres-replica-container> psql -U user -d users_db -c "SELECT id, username FROM users LIMIT 5;"
+```
+
+**Principle demonstrated:** Read/write separation, database replication.
+
+---
+
+### Step 8 — Simulate a network partition (2 min)
+
+```bash
+docker network disconnect journey-net distributed-traffic-service-rabbitmq-1
+
+# Watch partition detection in journey-service logs
+docker compose logs journey-service | grep "PARTITIONED"
+
+docker network connect journey-net distributed-traffic-service-rabbitmq-1
+
+# Watch recovery
+docker compose logs journey-service | grep "recovered"
+```
+
+**Principle demonstrated:** Partition detection, CAP theorem trade-offs, staleness flagging.
 
 ---
 
 ## 10. API Reference
 
-### Local mode base URLs
+All endpoints go through the nginx gateway at `http://localhost:8080`. All protected endpoints require `Authorization: Bearer <token>`.
 
-| Service | Base URL |
-|---------|----------|
-| User Service | `http://localhost:8001` |
-| Journey Service | `http://localhost:8002` |
-| Conflict Service | `http://localhost:8003` |
-| Notification Service | `http://localhost:8004` |
-| Enforcement Service | `http://localhost:8005` |
-| Analytics Service | `http://localhost:8006` |
+### Auth
 
-### Docker mode base URL
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/users/register` | Register a new user |
+| `POST` | `/api/users/login` | Login, returns JWT |
+| `GET` | `/api/users/profile` | Get own profile |
 
-All routes go through the API Gateway: `http://localhost:8080`
+### Journeys
 
----
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/journeys/` | Book a journey (supply `Idempotency-Key` header) |
+| `GET` | `/api/journeys/` | List own journeys |
+| `GET` | `/api/journeys/{id}` | Get journey detail |
+| `DELETE` | `/api/journeys/{id}` | Cancel a journey |
 
-### User Service
+### Enforcement
 
-#### Register a driver
-```http
-POST /api/users/register
-Content-Type: application/json
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/enforcement/verify/plate/{plate}` | Verify booking by plate |
+| `GET` | `/api/enforcement/verify/license/{number}` | Verify booking by licence |
 
-{
-  "email": "alice@example.com",
-  "password": "securepass123",
-  "full_name": "Alice Johnson",
-  "license_number": "DL-ALICE-001"
-}
-```
-Response `201`:
-```json
-{
-  "id": "uuid",
-  "email": "alice@example.com",
-  "full_name": "Alice Johnson",
-  "license_number": "DL-ALICE-001",
-  "created_at": "2026-03-10T18:00:00"
-}
-```
+### Analytics
 
-#### Login
-```http
-POST /api/users/login
-Content-Type: application/json
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/analytics/stats` | Current booking stats |
+| `GET` | `/api/analytics/health/services` | Aggregated health of all services |
+| `GET` | `/api/analytics/events` | Recent event log |
 
-{
-  "email": "alice@example.com",
-  "password": "securepass123"
-}
-```
-Response `200`:
-```json
-{
-  "access_token": "eyJhbGci...",
-  "token_type": "bearer",
-  "expires_in": 86400
-}
-```
+### Notifications
 
-#### Get your profile
-```http
-GET /api/users/me
-Authorization: Bearer <token>
-```
+| Method | Path | Description |
+|---|---|---|
+| `WS` | `/ws/notifications` | WebSocket stream for real-time push |
+| `GET` | `/api/notifications/history` | Past notifications (Redis-backed) |
 
----
+### Health
 
-### Journey Service
-
-#### Book a journey
-```http
-POST /api/journeys/
-Authorization: Bearer <token>
-Content-Type: application/json
-
-{
-  "origin": "Dublin City Centre",
-  "destination": "Cork Airport",
-  "origin_lat": 53.3498,
-  "origin_lng": -6.2603,
-  "destination_lat": 51.8413,
-  "destination_lng": -8.4911,
-  "departure_time": "2026-03-10T20:00:00",
-  "estimated_duration_minutes": 180,
-  "vehicle_registration": "221-D-12345",
-  "idempotency_key": "my-unique-key-001"
-}
-```
-Response `201`:
-```json
-{
-  "id": "uuid",
-  "status": "CONFIRMED",
-  "origin": "Dublin City Centre",
-  "destination": "Cork Airport",
-  "departure_time": "2026-03-10T20:00:00",
-  "estimated_arrival_time": "2026-03-10T23:00:00",
-  "vehicle_registration": "221-D-12345",
-  "rejection_reason": null
-}
-```
-If a conflict is detected, `status` will be `"REJECTED"` and `rejection_reason` will explain why.
-
-#### List my journeys
-```http
-GET /api/journeys/
-Authorization: Bearer <token>
-```
-Optional query params: `?status=CONFIRMED`, `?page=1`, `?page_size=20`
-
-#### Get a specific journey
-```http
-GET /api/journeys/{journey_id}
-Authorization: Bearer <token>
-```
-
-#### Cancel a journey
-```http
-DELETE /api/journeys/{journey_id}
-Authorization: Bearer <token>
-```
-
-#### Get points balance
-```http
-GET /api/journeys/points/balance
-Authorization: Bearer <token>
-```
-Response `200`:
-```json
-{
-  "user_id": "uuid",
-  "balance": 22,
-  "total_earned": 32,
-  "total_spent": 10
-}
-```
-
-#### Get points history
-```http
-GET /api/journeys/points/history?limit=10
-Authorization: Bearer <token>
-```
-Response `200`:
-```json
-{
-  "transactions": [
-    { "id": "uuid", "amount": 10, "reason": "JOURNEY_COMPLETED", "journey_id": "uuid", "balance_after": 32, "created_at": "..." },
-    { "id": "uuid", "amount": -5, "reason": "LATE_CANCELLATION", "journey_id": "uuid", "balance_after": 22, "created_at": "..." }
-  ],
-  "count": 2
-}
-```
-
-#### Spend points
-```http
-POST /api/journeys/points/spend?amount=10
-Authorization: Bearer <token>
-```
-Uses `SELECT FOR UPDATE` to prevent double-spending. Returns `400` if insufficient balance.
-
----
-
-### Enforcement Service
-
-#### Verify by vehicle registration
-```http
-GET /api/enforcement/verify/vehicle/221-D-12345
-```
-Response:
-```json
-{
-  "is_valid": true,
-  "driver_id": "uuid",
-  "journey_id": "uuid",
-  "journey_status": "CONFIRMED",
-  "origin": "Dublin City Centre",
-  "destination": "Cork Airport",
-  "departure_time": "2026-03-10T20:00:00",
-  "estimated_arrival_time": "2026-03-10T23:00:00",
-  "checked_at": "2026-03-10T19:55:00"
-}
-```
-If no active booking: `{ "is_valid": false, "checked_at": "..." }`
-
-#### Verify by driving licence number
-```http
-GET /api/enforcement/verify/license/DL-ALICE-001
-```
-Same response format as above.
-
----
-
-### Analytics Service
-
-#### System statistics
-```http
-GET /api/analytics/stats
-```
-Response:
-```json
-{
-  "total_events_today": 12,
-  "confirmed_today": 4,
-  "rejected_today": 5,
-  "cancelled_today": 3,
-  "total_events_all_time": 12,
-  "events_last_hour": 12
-}
-```
-
-#### Event history
-```http
-GET /api/analytics/events?limit=20&event_type=journey.confirmed
-```
-
-#### All services health dashboard
-```http
-GET /api/analytics/health/services
-```
-Response:
-```json
-{
-  "overall_status": "healthy",
-  "services": {
-    "user-service":        { "status": "healthy", "response_time_ms": 9 },
-    "journey-service":     { "status": "healthy", "response_time_ms": 4 },
-    "conflict-service":    { "status": "healthy", "response_time_ms": 4 },
-    "notification-service":{ "status": "healthy", "response_time_ms": 3 },
-    "enforcement-service": { "status": "healthy", "response_time_ms": 2 },
-    "analytics-service":   { "status": "healthy", "response_time_ms": 1 }
-  }
-}
-```
-
----
-
-### Notification Service
-
-#### Get notification history
-```http
-GET /api/notifications/?token=<JWT>&limit=20
-```
-Response:
-```json
-{
-  "notifications": [
-    {
-      "event_type": "journey.confirmed",
-      "title": "Journey Confirmed",
-      "message": "Your journey from Dublin City Centre to Cork Airport at 2026-03-10T20:00:00 has been confirmed.",
-      "journey_id": "uuid",
-      "timestamp": "2026-03-10T18:05:00"
-    }
-  ],
-  "count": 1
-}
-```
-
-#### Real-time WebSocket
-```
-ws://localhost:8004/ws/notifications/?token=<JWT>
-```
-Send `"ping"` → receive `"pong"` to keep the connection alive. Notifications are pushed as JSON when journey events occur.
-
----
-
-## 11. Testing & Failure Scenarios
-
-> **Docker required** for failure tests (they use `docker compose stop/start` to simulate crashes).
-
-```bash
-conda run -n DS python scripts/failure_tests.py
-```
-
-### Scenario 1 — Conflict Service crash during booking
-
-The Conflict Service is stopped mid-booking. The Journey Service saga times out after 30 seconds and rejects the booking gracefully (rather than leaving it stuck as `PENDING`). After the Conflict Service restarts, new bookings succeed normally.
-
-**Expected:** `status: REJECTED`, `rejection_reason: "Conflict check service unavailable. Please retry."`
-
-### Scenario 2 — Redis cache flushed
-
-Redis is completely flushed (`FLUSHALL`). The Enforcement Service no longer finds journeys in cache, so it falls back to querying the Journey Service API directly. The result is the same — the booking is found — just slightly slower (~50ms vs sub-1ms).
-
-**Expected:** Enforcement still returns a valid booking via API fallback.
-
-### Scenario 3 — RabbitMQ restart
-
-RabbitMQ is restarted. Since messages are persisted to disk (durable queues, persistent delivery mode), no messages are lost. All services auto-reconnect using `aio_pika.connect_robust()` with retry logic. Event processing resumes automatically.
-
-**Expected:** After ~30s, all services reconnect and continue processing.
-
-### Scenario 4 — Journey database outage
-
-The `postgres-journeys` container is stopped. The Journey Service returns `HTTP 500` on all requests (graceful degradation — no silent failures). After the database restarts, the service resumes with zero data loss.
-
-**Expected:** `HTTP 500` during outage, `HTTP 200` after recovery.
-
----
-
-## 12. Load Testing
-
-```bash
-# Default: 10 concurrent users for 30 seconds
-conda run -n DS python scripts/load_test.py
-
-# Custom
-conda run -n DS python scripts/load_test.py --users 50 --duration 60
-
-# Against Docker gateway
-conda run -n DS python scripts/load_test.py --url http://localhost:8080 --users 20 --duration 30
-```
-
-Sample output:
-```
-LOAD TEST RESULTS
-==================================================
-  Duration:         30s
-  Concurrent Users: 10
-  Total Requests:   87
-  Successful:       87
-  Failed:           0
-  Confirmed:        72
-  Rejected:         15
-
-  Latency Statistics:
-    Min:    120ms
-    Max:    850ms
-    Mean:   310ms
-    Median: 290ms
-    P95:    620ms
-    P99:    800ms
-
-  Throughput: 2.9 requests/second
-```
-
----
-
-## 13. How Booking Works End-to-End
-
-Here is the complete flow for a successful booking:
-
-```
-1. Client sends POST /api/journeys/ with JWT token
-        ↓
-2. Journey Service creates journey record with status=PENDING in PostgreSQL
-        ↓
-3. Journey Service calls BookingSaga.execute(journey)
-        ↓
-4. BookingSaga sends POST /api/conflicts/check to Conflict Service (sync REST, 30s timeout)
-        ↓
-5. Conflict Service checks 3 things:
-   a) Does this driver have an overlapping booking?  → BookedSlots table
-   b) Does this vehicle have an overlapping booking? → BookedSlots table
-   c) Is road capacity exceeded at origin/destination grid cell? → RoadSegmentCapacity table
-        ↓
-6a. No conflict → Conflict Service inserts a new BookedSlot record, returns is_conflict=false
-        ↓
-7a. Journey Service updates status=CONFIRMED, caches journey in Redis (by vehicle + user ID)
-        ↓
-8a. Journey Service publishes journey.confirmed event to RabbitMQ
-        ↓
-9a. RabbitMQ fans out to 3 consumers:
-   - Notification Service → stores notification in Redis, pushes to WebSocket if connected
-   - Analytics Service → inserts EventLog row, increments Redis daily counter
-   - (Enforcement Service reads from Redis cache on demand — no consumer needed)
-        ↓
-10a. Client receives HTTP 201 with status=CONFIRMED ✅
-
-6b. Conflict found → returns is_conflict=true with reason
-        ↓
-7b. Journey Service updates status=REJECTED, sets rejection_reason
-        ↓
-8b. Publishes journey.rejected event
-        ↓
-9b. Notification + Analytics consume the event
-        ↓
-10b. Client receives HTTP 201 with status=REJECTED ❌
-
-6c. Conflict Service unreachable / timeout after 30s
-        ↓
-7c. Journey Service updates status=REJECTED, reason="Conflict check service unavailable"
-        ↓
-10c. Client receives HTTP 201 with status=REJECTED (safe to retry) 🔄
-```
-
----
-
-## Environment Variables Reference
-
-Every service reads configuration from environment variables. Defaults assume the Docker network hostnames.
-
-| Variable | Default (Docker) | Description |
-|----------|-----------------|-------------|
-| `DATABASE_URL` | `postgresql+asyncpg://...@postgres-xxx:5432/xxx_db` | Service database connection |
-| `REDIS_URL` | `redis://redis:6379/1` | Redis connection (DB 1 for journey cache) |
-| `RABBITMQ_URL` | `amqp://journey_admin:journey_pass@rabbitmq:5672/journey_vhost` | Message broker |
-| `JWT_SECRET` | `super-secret-jwt-key-change-in-production` | JWT signing key (change in production!) |
-| `SERVICE_NAME` | `unknown-service` | Used in log formatting |
-| `CONFLICT_SERVICE_URL` | `http://conflict-service:8000` | Journey Service → Conflict Service URL |
-| `JOURNEY_SERVICE_URL` | `http://journey-service:8000` | Enforcement Service → Journey Service URL |
-
-In local mode, `run_local.sh` overrides these automatically with `localhost` addresses.
-
----
-
-## Interactive API Documentation
-
-FastAPI auto-generates Swagger UI for every service:
-
-| Service | Swagger URL |
-|---------|------------|
-| User Service | http://localhost:8001/docs |
-| Journey Service | http://localhost:8002/docs |
-| Conflict Service | http://localhost:8003/docs |
-| Notification Service | http://localhost:8004/docs |
-| Enforcement Service | http://localhost:8005/docs |
-| Analytics Service | http://localhost:8006/docs |
-
----
-
-## Tech Stack
-
-| Component | Technology | Why |
-|-----------|-----------|-----|
-| Language | Python 3.12 + Go 1.22 | Python for fast development; Go for the notification service (high-concurrency WebSocket handling) |
-| Web framework | FastAPI + Chi | Native async/await, auto OpenAPI docs, high throughput |
-| ORM | SQLAlchemy 2.0 (async) | Mature, full async support with explicit isolation level control |
-| Database | PostgreSQL 16 (primary + read replica) | ACID guarantees, streaming replication for read scaling, WAL-based replica recovery |
-| Cache | Redis 7 (primary + replica + Sentinel) | Sub-millisecond lookups, TTL expiry, AOF persistence, automatic failover via Sentinel |
-| Message broker | RabbitMQ 3.13 | Durable topic routing, dead-letter queues, persistent messages, management UI |
-| API Gateway | Nginx 1.25 | Reverse proxy, built-in rate limiting, WebSocket support, round-robin load balancing |
-| Auth | PyJWT + bcrypt | Stateless JWT, no session store needed |
-| Containerisation | Docker + Docker Compose | Reproducible multi-service deployment with health checks and auto-restart |
+Every service exposes `GET /health` returning `{"status": "healthy", "service": "..."}`.
