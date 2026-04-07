@@ -28,34 +28,48 @@ class UserService:
 
     @staticmethod
     async def register(db: AsyncSession, request: UserRegisterRequest) -> UserResponse:
-        """Register a new user."""
-        # Check if email already exists
-        existing = await db.execute(
-            select(User).where(User.email == request.email)
-        )
-        if existing.scalar_one_or_none():
-            raise ValueError("Email already registered")
+        """Register a new user inside an atomic transaction.
 
-        # Check if license already exists
-        existing_license = await db.execute(
-            select(User).where(User.license_number == request.license_number)
-        )
-        if existing_license.scalar_one_or_none():
-            raise ValueError("License number already registered")
+        All checks and the insert are wrapped in a single BEGIN/COMMIT block.
+        Any failure (validation or DB error) rolls back the entire transaction
+        so no partial state is left behind.
+        """
+        user = None
+        try:
+            async with db.begin():
+                # Check if email already exists
+                existing = await db.execute(
+                    select(User).where(User.email == request.email)
+                )
+                if existing.scalar_one_or_none():
+                    raise ValueError("Email already registered")
 
-        # Create user
-        user = User(
-            id=str(uuid.uuid4()),
-            email=request.email,
-            password_hash=pwd_context.hash(request.password),
-            full_name=request.full_name,
-            license_number=request.license_number,
-        )
+                # Check if license already exists
+                existing_license = await db.execute(
+                    select(User).where(User.license_number == request.license_number)
+                )
+                if existing_license.scalar_one_or_none():
+                    raise ValueError("License number already registered")
 
-        db.add(user)
-        await db.commit()
+                # Create user — all three operations are now one atomic unit
+                user = User(
+                    id=str(uuid.uuid4()),
+                    email=request.email,
+                    password_hash=pwd_context.hash(request.password),
+                    full_name=request.full_name,
+                    license_number=request.license_number,
+                )
+                db.add(user)
+                # Transaction commits here on successful exit; rolls back on any exception
+
+        except ValueError:
+            # Re-raise validation errors (duplicate email/license) as-is
+            raise
+        except Exception as e:
+            logger.error(f"Registration transaction failed for {request.email}: {e}")
+            raise RuntimeError("A problem occurred, you are not registered. Please try again.")
+
         await db.refresh(user)
-
         logger.info(f"User registered: {user.id} ({user.email})")
 
         return UserResponse(

@@ -25,14 +25,21 @@ router = APIRouter(prefix="/api/users", tags=["Users"])
     "/register",
     response_model=UserResponse,
     status_code=201,
-    responses={400: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+    responses={
+        409: {"model": ErrorResponse},
+        500: {"model": ErrorResponse},
+    },
 )
 async def register(request: UserRegisterRequest, db: AsyncSession = Depends(get_db)):
     """Register a new driver account."""
     try:
         return await UserService.register(db, request)
     except ValueError as e:
+        # Duplicate email or license — tell the user exactly what conflicted
         raise HTTPException(status_code=409, detail=str(e))
+    except RuntimeError as e:
+        # Transaction rolled back due to an unexpected DB/system error
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post(
