@@ -49,6 +49,22 @@ func main() {
 	go runHoldExpiry()
 	log.Println("Hold expiry background goroutine started")
 
+	// Initialize Redis region registry and start heartbeat
+	reg, err := NewRegistry(cfg.RedisURL, cfg)
+	if err != nil {
+		log.Printf("Warning: could not connect to Redis registry: %v", err)
+	} else {
+		regionRegistry = reg
+		ctx := context.Background()
+		if err := reg.Register(ctx); err != nil {
+			log.Printf("Warning: initial registry write failed: %v", err)
+		} else {
+			log.Printf("[%s] registered in Redis registry", cfg.RegionID)
+		}
+		reg.StartHeartbeat()
+		log.Println("Registry heartbeat goroutine started (every 15s, TTL 45s)")
+	}
+
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(corsMiddleware)
@@ -66,6 +82,7 @@ func main() {
 
 	// Region info
 	r.Get("/api/region/info", regionInfoHandler)
+	r.Get("/api/region/peers", regionPeersHandler)
 
 	// Simulation control endpoints
 	r.Post("/api/simulate/delay", simulateDelayHandler)
@@ -91,9 +108,12 @@ func main() {
 
 	<-quit
 	log.Printf("[%s] shutting down...", cfg.ServiceName)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if regionRegistry != nil {
+		regionRegistry.Stop()
+	}
+	ctx2, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	srv.Shutdown(ctx)
+	srv.Shutdown(ctx2)
 }
 
 func corsMiddleware(next http.Handler) http.Handler {

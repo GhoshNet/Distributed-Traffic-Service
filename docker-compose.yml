@@ -612,6 +612,7 @@ services:
     environment:
       DATABASE_URL: postgresql://conflicts_user:conflicts_pass@postgres-conflicts:5432/conflicts_db
       REDIS_URL: redis://redis:6379/2
+      REGISTRY_REDIS_URL: redis://redis:6379/0
       REDIS_SENTINEL_ADDRS: redis-sentinel:26379,redis-sentinel-2:26379,redis-sentinel-3:26379
       REDIS_MASTER_NAME: mymaster
       RABBITMQ_URL: amqp://journey_admin:journey_pass@rabbitmq:5672/journey_vhost
@@ -646,6 +647,7 @@ services:
     environment:
       DATABASE_URL: postgresql://conflicts_ni_user:conflicts_ni_pass@postgres-conflicts-ni:5432/conflicts_ni_db
       REDIS_URL: redis://redis:6379/6
+      REGISTRY_REDIS_URL: redis://redis:6379/0
       REDIS_SENTINEL_ADDRS: redis-sentinel:26379,redis-sentinel-2:26379,redis-sentinel-3:26379
       REDIS_MASTER_NAME: mymaster
       RABBITMQ_URL: amqp://journey_admin:journey_pass@rabbitmq:5672/journey_vhost

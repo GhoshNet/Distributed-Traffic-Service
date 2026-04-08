@@ -179,6 +179,28 @@ func regionInfoHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func regionPeersHandler(w http.ResponseWriter, r *http.Request) {
+	if regionRegistry == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error":   "registry_unavailable",
+			"message": "region registry not initialized",
+		})
+		return
+	}
+
+	peers, err := regionRegistry.GetPeers(r.Context())
+	if err != nil {
+		log.Printf("Failed to get peers: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error":   "internal_error",
+			"message": err.Error(),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, peers)
+}
+
 // ─── Simulation Handlers ─────────────────────────────────────────────────────
 
 func simulateDelayHandler(w http.ResponseWriter, r *http.Request) {
