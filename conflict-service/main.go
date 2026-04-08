@@ -16,7 +16,23 @@ import (
 func main() {
 	cfg := loadConfig()
 	log.SetFlags(log.LstdFlags)
-	log.Printf("[%s] starting up...", cfg.ServiceName)
+	log.Printf("[%s] starting up... region=%s (%s)", cfg.ServiceName, cfg.RegionID, cfg.RegionName)
+	if len(cfg.OwnedRoutes) > 0 {
+		log.Printf("[%s] owned routes: %v", cfg.ServiceName, cfg.OwnedRoutes)
+	} else {
+		log.Printf("[%s] no REGION_OWNED_ROUTES set — seeding all routes", cfg.ServiceName)
+	}
+
+	// Store region config globally for handlers and DB seeding
+	regionConfig = cfg
+
+	// Set ownedRoutes package var for DB seed filtering
+	if len(cfg.OwnedRoutes) > 0 {
+		ownedRoutes = make(map[string]bool, len(cfg.OwnedRoutes))
+		for _, r := range cfg.OwnedRoutes {
+			ownedRoutes[r] = true
+		}
+	}
 
 	if err := initDB(cfg.DatabaseURL); err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
@@ -29,14 +45,34 @@ func main() {
 		log.Println("Connected to RabbitMQ and started consumer")
 	}
 
+	// Start background hold expiry goroutine
+	go runHoldExpiry()
+	log.Println("Hold expiry background goroutine started")
+
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(corsMiddleware)
+	r.Use(simulationMiddleware)
 
-	r.Get("/health", healthHandler)
+	r.Get("/health", healthHandlerWithRegion)
 	r.Get("/api/routes", listRoutesHandler)
 	r.Post("/api/conflicts/check", checkConflictsHandler)
 	r.Post("/api/conflicts/cancel/{journey_id}", cancelBookingSlotHandler)
+
+	// Hold / Commit / Rollback (distributed 2-phase saga)
+	r.Post("/api/conflicts/hold", holdHandler)
+	r.Post("/api/conflicts/commit/{hold_id}", commitHoldHandler)
+	r.Post("/api/conflicts/rollback/{hold_id}", rollbackHoldHandler)
+
+	// Region info
+	r.Get("/api/region/info", regionInfoHandler)
+
+	// Simulation control endpoints
+	r.Post("/api/simulate/delay", simulateDelayHandler)
+	r.Post("/api/simulate/failure", simulateFailureHandler)
+	r.Post("/api/simulate/recover", simulateRecoverHandler)
+	r.Post("/api/simulate/partition", simulatePartitionHandler)
+	r.Get("/api/simulate/status", simulateStatusHandler)
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.Port,

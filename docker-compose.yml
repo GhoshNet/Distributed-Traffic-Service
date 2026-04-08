@@ -422,6 +422,61 @@ services:
     networks:
       - journey-net
 
+  postgres-conflicts-ni:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: conflicts_ni_db
+      POSTGRES_USER: conflicts_ni_user
+      POSTGRES_PASSWORD: conflicts_ni_pass
+    volumes:
+      - pg_conflicts_ni_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    command: >
+      postgres
+        -c wal_level=replica
+        -c max_wal_senders=3
+        -c max_replication_slots=3
+        -c hot_standby=on
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U conflicts_ni_user -d conflicts_ni_db" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - journey-net
+
+  postgres-conflicts-ni-replica:
+    image: postgres:16-alpine
+    environment:
+      PGUSER: conflicts_ni_user
+      PGPASSWORD: conflicts_ni_pass
+    volumes:
+      - pg_conflicts_ni_replica_data:/var/lib/postgresql/data
+    entrypoint: |
+      bash -c "
+      chown -R postgres:postgres /var/lib/postgresql/data
+      chmod 700 /var/lib/postgresql/data
+      if [ ! -f /var/lib/postgresql/data/PG_VERSION ]; then
+        echo 'Initializing NI replica from primary...'
+        until pg_isready -h postgres-conflicts-ni -U conflicts_ni_user -d conflicts_ni_db; do sleep 2; done
+        gosu postgres pg_basebackup -h postgres-conflicts-ni -U conflicts_ni_user -D /var/lib/postgresql/data -Fp -Xs -P -R
+      fi
+      exec gosu postgres postgres -c hot_standby=on
+      "
+    depends_on:
+      postgres-conflicts-ni:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U conflicts_ni_user -d conflicts_ni_db" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - journey-net
+
   postgres-analytics:
     image: postgres:16-alpine
     environment:
@@ -526,7 +581,9 @@ services:
       REDIS_SENTINEL_ADDRS: redis-sentinel:26379,redis-sentinel-2:26379,redis-sentinel-3:26379
       REDIS_MASTER_NAME: mymaster
       RABBITMQ_URL: amqp://journey_admin:journey_pass@rabbitmq:5672/journey_vhost
-      CONFLICT_SERVICE_URL: http://conflict-service:8000
+      CONFLICT_SERVICE_URL: http://conflict-service-ie:8000
+      CONFLICT_REGIONS: "IE:http://conflict-service-ie:8000,NI:http://conflict-service-ni:8000"
+      ROUTE_REGION_MAP: "dublin-galway:IE,dublin-cork:IE,dublin-limerick:IE,galway-limerick:IE,limerick-cork:IE,dublin-belfast:IE-NI"
       JWT_SECRET: keefkfwjNBEFINoodwoedibIOEJFKWNFIjjjdIIIOOP
       SERVICE_NAME: journey-service
     depends_on:
@@ -546,7 +603,7 @@ services:
     networks:
       - journey-net
 
-  conflict-service:
+  conflict-service-ie:
     build:
       context: .
       dockerfile: conflict-service/Dockerfile
@@ -559,9 +616,46 @@ services:
       REDIS_MASTER_NAME: mymaster
       RABBITMQ_URL: amqp://journey_admin:journey_pass@rabbitmq:5672/journey_vhost
       JWT_SECRET: keefkfwjNBEFINoodwoedibIOEJFKWNFIjjjdIIIOOP
-      SERVICE_NAME: conflict-service
+      SERVICE_NAME: conflict-service-ie
+      REGION_ID: IE
+      REGION_NAME: "Republic of Ireland"
+      REGION_OWNED_ROUTES: "dublin-galway,dublin-cork,dublin-limerick,galway-limerick,limerick-cork"
     depends_on:
       postgres-conflicts:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - journey-net
+
+  conflict-service-ni:
+    build:
+      context: .
+      dockerfile: conflict-service/Dockerfile
+    ports:
+      - "8007:8000"
+    environment:
+      DATABASE_URL: postgresql://conflicts_ni_user:conflicts_ni_pass@postgres-conflicts-ni:5432/conflicts_ni_db
+      REDIS_URL: redis://redis:6379/6
+      REDIS_SENTINEL_ADDRS: redis-sentinel:26379,redis-sentinel-2:26379,redis-sentinel-3:26379
+      REDIS_MASTER_NAME: mymaster
+      RABBITMQ_URL: amqp://journey_admin:journey_pass@rabbitmq:5672/journey_vhost
+      JWT_SECRET: keefkfwjNBEFINoodwoedibIOEJFKWNFIjjjdIIIOOP
+      SERVICE_NAME: conflict-service-ni
+      REGION_ID: NI
+      REGION_NAME: "Northern Ireland"
+      REGION_OWNED_ROUTES: "dublin-belfast"
+    depends_on:
+      postgres-conflicts-ni:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -679,6 +773,8 @@ volumes:
   pg_journeys_replica_data:
   pg_conflicts_data:
   pg_conflicts_replica_data:
+  pg_conflicts_ni_data:
+  pg_conflicts_ni_replica_data:
   pg_analytics_data:
   pg_analytics_replica_data:
 

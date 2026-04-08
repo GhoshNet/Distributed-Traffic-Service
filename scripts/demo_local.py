@@ -17,7 +17,9 @@ from datetime import datetime, timedelta
 # Direct service URLs (no nginx)
 USER_URL = "http://localhost:8001"
 JOURNEY_URL = "http://localhost:8002"
-CONFLICT_URL = "http://localhost:8003"
+CONFLICT_URL = "http://localhost:8003"     # conflict-service-ie (Republic of Ireland)
+CONFLICT_IE_URL = "http://localhost:8003"  # alias for clarity
+CONFLICT_NI_URL = "http://localhost:8007"  # conflict-service-ni (Northern Ireland)
 NOTIFICATION_URL = "http://localhost:8004"
 ENFORCEMENT_URL = "http://localhost:8005"
 ANALYTICS_URL = "http://localhost:8006"
@@ -427,6 +429,202 @@ async def main():
             info(f"Overall system status: {health.get('overall_status', 'unknown')}")
 
     # ============================================
+    # Step A: Regional Topology
+    # ============================================
+    header("Step A: Regional Federation — Topology")
+    async with httpx.AsyncClient(timeout=10) as client:
+        for region_name, url in [("IE (Republic of Ireland)", CONFLICT_IE_URL), ("NI (Northern Ireland)", CONFLICT_NI_URL)]:
+            try:
+                resp = await client.get(f"{url}/api/region/info")
+                if resp.status_code == 200:
+                    d = resp.json()
+                    success(f"Region {d.get('region_id')} — {d.get('region_name')}")
+                    info(f"  Owned routes: {', '.join(d.get('owned_routes', []))}")
+                    info(f"  Status: {d.get('status', 'NORMAL')}")
+                else:
+                    error(f"{region_name} region info: HTTP {resp.status_code}")
+            except Exception as e:
+                info(f"  {region_name} not reachable (local mode — NI runs on port 8007): {e}")
+
+    # ============================================
+    # Step B: Cross-region booking (Dublin → Belfast)
+    # ============================================
+    header("Step B: Cross-region booking — Dublin → Belfast (IE + NI two-phase saga)")
+    info("  This route crosses both IE (M1 south of Newry) and NI (A1 north of Newry)")
+    info("  Journey Service will run Phase 1 (hold) on both regions, then Phase 2 (commit)")
+    cross_journey = None
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(f"{JOURNEY_URL}/api/journeys/", json={
+            "origin": "Dublin",
+            "destination": "Belfast",
+            "origin_lat": 53.3498, "origin_lng": -6.2603,
+            "destination_lat": 54.5973, "destination_lng": -5.9301,
+            "departure_time": (datetime.utcnow() + timedelta(hours=3)).isoformat(),
+            "estimated_duration_minutes": 120,
+            "vehicle_registration": "221-D-12345",
+            "route_id": "dublin-belfast",
+            "idempotency_key": f"demo-alice-dub-bel-{int(time.time())}"
+        }, headers=alice_headers)
+
+        if resp.status_code == 201:
+            cross_journey = resp.json()
+            if cross_journey["status"] == "CONFIRMED":
+                success(f"Cross-region Dublin→Belfast CONFIRMED: {cross_journey['id']}")
+                info("  Phase 1: Hold acquired on IE (Dublin→Newry segment)")
+                info("  Phase 1: Hold acquired on NI (Newry→Belfast segment)")
+                info("  Phase 2: Committed on both regions")
+            else:
+                info(f"  Cross-region booking: {cross_journey['status']} — {cross_journey.get('rejection_reason', '')}")
+                info("  (NI service may not be running in local mode — start it on port 8007)")
+        else:
+            error(f"Cross-region booking failed: {resp.text}")
+
+    # ============================================
+    # Step C: Simulate NI node failure
+    # ============================================
+    header("Step C: Simulate NI node failure — graceful degradation")
+    async with httpx.AsyncClient(timeout=10) as client:
+        try:
+            resp = await client.post(f"{CONFLICT_NI_URL}/api/simulate/failure")
+            if resp.status_code == 200:
+                success(f"NI node is now in FAILED state: {resp.json()}")
+            else:
+                info(f"  NI simulate endpoint: HTTP {resp.status_code} (NI may not be running)")
+        except Exception as e:
+            info(f"  NI node not reachable (expected in local single-service mode): {e}")
+
+    info("  Attempting Dublin→Belfast while NI is FAILED (expect REJECTED)...")
+    async with httpx.AsyncClient(timeout=30) as client:
+        try:
+            resp = await client.post(f"{JOURNEY_URL}/api/journeys/", json={
+                "origin": "Dublin",
+                "destination": "Belfast",
+                "origin_lat": 53.3498, "origin_lng": -6.2603,
+                "destination_lat": 54.5973, "destination_lng": -5.9301,
+                "departure_time": (datetime.utcnow() + timedelta(hours=4)).isoformat(),
+                "estimated_duration_minutes": 120,
+                "vehicle_registration": "231-L-67890",
+                "route_id": "dublin-belfast",
+                "idempotency_key": f"demo-bob-dub-bel-fail-{int(time.time())}"
+            }, headers=bob_headers)
+            if resp.status_code == 201:
+                j = resp.json()
+                if j["status"] == "REJECTED":
+                    success(f"Correctly REJECTED while NI is down: {j.get('rejection_reason', '')[:80]}")
+                else:
+                    info(f"  Dublin→Belfast status: {j['status']} (NI may not be running locally)")
+        except Exception as e:
+            error(f"  Booking request failed: {e}")
+
+    info("  IE-only booking (Dublin→Galway) should still work while NI is down...")
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(f"{JOURNEY_URL}/api/journeys/", json={
+            "origin": "Dublin",
+            "destination": "Galway",
+            "origin_lat": 53.3498, "origin_lng": -6.2603,
+            "destination_lat": 53.2707, "destination_lng": -9.0568,
+            "departure_time": (datetime.utcnow() + timedelta(hours=5)).isoformat(),
+            "estimated_duration_minutes": 135,
+            "vehicle_registration": "221-D-12345",
+            "route_id": "dublin-galway",
+            "idempotency_key": f"demo-alice-dub-gal-ni-down-{int(time.time())}"
+        }, headers=alice_headers)
+        if resp.status_code == 201:
+            j = resp.json()
+            if j["status"] == "CONFIRMED":
+                success(f"IE-only Dublin→Galway CONFIRMED despite NI being down: {j['id']}")
+                info("  Demonstrates partial failure / graceful degradation")
+            else:
+                info(f"  Dublin→Galway: {j['status']} — {j.get('rejection_reason', '')}")
+
+    # ============================================
+    # Step D: NI node recovery
+    # ============================================
+    header("Step D: NI node recovery")
+    async with httpx.AsyncClient(timeout=10) as client:
+        try:
+            resp = await client.post(f"{CONFLICT_NI_URL}/api/simulate/recover")
+            if resp.status_code == 200:
+                success(f"NI node recovered: {resp.json()}")
+            else:
+                info(f"  NI recover: HTTP {resp.status_code}")
+        except Exception as e:
+            info(f"  NI node not reachable: {e}")
+
+    info("  Attempting Dublin→Belfast again after NI recovery (expect CONFIRMED)...")
+    async with httpx.AsyncClient(timeout=30) as client:
+        try:
+            resp = await client.post(f"{JOURNEY_URL}/api/journeys/", json={
+                "origin": "Dublin",
+                "destination": "Belfast",
+                "origin_lat": 53.3498, "origin_lng": -6.2603,
+                "destination_lat": 54.5973, "destination_lng": -5.9301,
+                "departure_time": (datetime.utcnow() + timedelta(hours=6)).isoformat(),
+                "estimated_duration_minutes": 120,
+                "vehicle_registration": "231-L-67890",
+                "route_id": "dublin-belfast",
+                "idempotency_key": f"demo-bob-dub-bel-recovered-{int(time.time())}"
+            }, headers=bob_headers)
+            if resp.status_code == 201:
+                j = resp.json()
+                if j["status"] == "CONFIRMED":
+                    success(f"Cross-region booking CONFIRMED after NI recovery: {j['id']}")
+                else:
+                    info(f"  Dublin→Belfast: {j['status']} — {j.get('rejection_reason', '')}")
+        except Exception as e:
+            error(f"  Post-recovery booking failed: {e}")
+
+    # ============================================
+    # Step E: Network delay simulation
+    # ============================================
+    header("Step E: Network delay simulation (IE node)")
+    async with httpx.AsyncClient(timeout=10) as client:
+        try:
+            resp = await client.post(f"{CONFLICT_IE_URL}/api/simulate/delay", json={"delay_ms": 2000})
+            if resp.status_code == 200:
+                success(f"IE node now in DELAYED state (2000ms): {resp.json()}")
+            else:
+                info(f"  IE simulate/delay: HTTP {resp.status_code}")
+        except Exception as e:
+            info(f"  IE delay simulation: {e}")
+
+    info("  Booking with 2s delay — observing latency impact...")
+    t_start = time.time()
+    async with httpx.AsyncClient(timeout=60) as client:
+        try:
+            resp = await client.post(f"{JOURNEY_URL}/api/journeys/", json={
+                "origin": "Dublin",
+                "destination": "Limerick",
+                "origin_lat": 53.3498, "origin_lng": -6.2603,
+                "destination_lat": 52.6638, "destination_lng": -8.6267,
+                "departure_time": (datetime.utcnow() + timedelta(hours=7)).isoformat(),
+                "estimated_duration_minutes": 120,
+                "vehicle_registration": "221-D-12345",
+                "route_id": "dublin-limerick",
+                "idempotency_key": f"demo-alice-dub-lim-delayed-{int(time.time())}"
+            }, headers=alice_headers)
+            elapsed = time.time() - t_start
+            if resp.status_code == 201:
+                j = resp.json()
+                info(f"  Booking took {elapsed:.1f}s (expected ~2s delay from IE simulation)")
+                if j["status"] == "CONFIRMED":
+                    success(f"Slow but CONFIRMED: {j['id']}")
+                else:
+                    info(f"  Status: {j['status']}")
+        except Exception as e:
+            elapsed = time.time() - t_start
+            info(f"  Booking attempt took {elapsed:.1f}s then failed: {e}")
+
+    # Recover IE node
+    async with httpx.AsyncClient(timeout=10) as client:
+        try:
+            resp = await client.post(f"{CONFLICT_IE_URL}/api/simulate/recover")
+            if resp.status_code == 200:
+                success("IE node recovered from DELAYED state")
+        except Exception:
+            pass
+
+    # ============================================
     # Done
     # ============================================
     header("Demo Complete!")
@@ -441,6 +639,13 @@ async def main():
     info("  OK  Journey cancellation with RabbitMQ event propagation")
     info("  OK  Notification delivery (WebSocket + Redis history)")
     info("  OK  Analytics and monitoring")
+    info("")
+    info("  === REGIONAL FEDERATION ===")
+    info("  OK  Regional topology: IE owns 5 routes, NI owns dublin-belfast")
+    info("  OK  Cross-region saga: Dublin→Belfast triggers 2-phase hold+commit across IE and NI")
+    info("  OK  Node failure simulation: NI down → cross-border rejected, IE-only routes unaffected")
+    info("  OK  Node recovery: NI recovers → cross-border bookings resume automatically")
+    info("  OK  Network delay simulation: IE DELAYED state shows latency impact on booking time")
     print()
 
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
+
 
 // FlexTime accepts RFC3339 with or without timezone offset.
 type FlexTime struct{ time.Time }
@@ -317,6 +319,7 @@ func checkRoadCapacity(ctx context.Context, tx pgx.Tx, req ConflictCheckRequest,
 		return "", err
 	}
 
+	log.Printf("[capacity-check] journey=%s cells=%d departure=%s arrival=%s", req.JourneyID, len(cells), req.DepartureTime.Time.Format("15:04:05"), arrivalTime.Format("15:04:05"))
 	for i, cell := range cells {
 		t := cellTime(req.DepartureTime.Time, arrivalTime, i, len(cells))
 
@@ -328,12 +331,15 @@ func checkRoadCapacity(ctx context.Context, tx pgx.Tx, req ConflictCheckRequest,
 			  AND time_slot_start <= $3
 			  AND time_slot_end > $3
 			  AND current_bookings >= max_capacity
-			FOR UPDATE
 		`, cell.lat, cell.lng, t).Scan(&count)
 		if err != nil {
 			return "", err
 		}
+		if i < 3 || (i >= len(cells)/2-1 && i <= len(cells)/2+1) {
+			log.Printf("[capacity-check] cell[%d] lat=%.10f lng=%.10f t=%s count=%d", i, cell.lat, cell.lng, t.Format("15:04:05"), count)
+		}
 		if count > 0 {
+			log.Printf("[capacity-check] CONFLICT at cell %d (%.4f,%.4f) t=%s count=%d", i, cell.lat, cell.lng, t.Format("15:04:05"), count)
 			return fmt.Sprintf(
 				"Road segment (%.2f, %.2f) is fully booked at %s — segment %d of %d along route",
 				cell.lat, cell.lng, t.Format("15:04 UTC"), i+1, len(cells),
@@ -349,14 +355,15 @@ func recordBookingSlot(ctx context.Context, tx pgx.Tx, req ConflictCheckRequest,
 	_, err := tx.Exec(ctx, `
 		INSERT INTO booked_slots
 			(id, journey_id, user_id, vehicle_registration, departure_time, arrival_time,
-			 origin_lat, origin_lng, destination_lat, destination_lng, is_active)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true)
+			 origin_lat, origin_lng, destination_lat, destination_lng, is_active, route_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true,$11)
 	`,
 		uuid.New().String(),
 		req.JourneyID, req.UserID, req.VehicleRegistration,
 		req.DepartureTime.Time, arrivalTime,
 		req.OriginLat, req.OriginLng,
 		req.DestinationLat, req.DestinationLng,
+		req.RouteID,
 	)
 	if err != nil {
 		return err
@@ -395,6 +402,122 @@ func incrementCapacity(ctx context.Context, tx pgx.Tx, lat, lng float64, t time.
 
 var ErrNotFound = errors.New("journey not found")
 
+// HoldConflictResponse is returned by holdConflicts.
+type HoldConflictResponse struct {
+	HoldID         string    `json:"hold_id"`
+	JourneyID      string    `json:"journey_id"`
+	IsConflict     bool      `json:"is_conflict"`
+	ConflictType   *string   `json:"conflict_type,omitempty"`
+	ConflictDetails *string  `json:"conflict_details,omitempty"`
+	Status         string    `json:"status"`    // "HELD" or "CONFLICT"
+	ExpiresAt      time.Time `json:"expires_at,omitempty"`
+	CheckedAt      time.Time `json:"checked_at"`
+}
+
+// holdConflicts performs the same checks as checkConflicts but, instead of
+// recording the booking directly, writes a held_bookings row. Road capacity IS
+// incremented so subsequent holds on the same cells are rejected.
+// Hold TTL is 30 seconds.
+func holdConflicts(ctx context.Context, req ConflictCheckRequest) (HoldConflictResponse, error) {
+	arrivalTime := req.DepartureTime.Time.Add(time.Duration(req.EstimatedDurationMinutes) * time.Minute)
+	bufferedDeparture := req.DepartureTime.Time.Add(-journeyBufferMinutes * time.Minute)
+	bufferedArrival := arrivalTime.Add(journeyBufferMinutes * time.Minute)
+
+	tx, err := db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return HoldConflictResponse{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	// Check 1: driver time overlap
+	if conflict, err := checkDriverOverlap(ctx, tx, req.UserID, bufferedDeparture, bufferedArrival, req.JourneyID); err != nil {
+		return HoldConflictResponse{}, err
+	} else if conflict != nil {
+		ct := "TIME_OVERLAP"
+		details := fmt.Sprintf(
+			"Driver already has a journey booked from %s to %s",
+			conflict.departureTime.Format(time.RFC3339),
+			conflict.arrivalTime.Format(time.RFC3339),
+		)
+		return HoldConflictResponse{
+			JourneyID:       req.JourneyID,
+			IsConflict:      true,
+			ConflictType:    &ct,
+			ConflictDetails: &details,
+			Status:          "CONFLICT",
+			CheckedAt:       time.Now().UTC(),
+		}, nil
+	}
+
+	// Check 2: vehicle time overlap
+	if conflict, err := checkVehicleOverlap(ctx, tx, req.VehicleRegistration, bufferedDeparture, bufferedArrival, req.JourneyID); err != nil {
+		return HoldConflictResponse{}, err
+	} else if conflict != nil {
+		ct := "TIME_OVERLAP"
+		details := fmt.Sprintf(
+			"Vehicle %s already has a journey booked from %s to %s",
+			req.VehicleRegistration,
+			conflict.departureTime.Format(time.RFC3339),
+			conflict.arrivalTime.Format(time.RFC3339),
+		)
+		return HoldConflictResponse{
+			JourneyID:       req.JourneyID,
+			IsConflict:      true,
+			ConflictType:    &ct,
+			ConflictDetails: &details,
+			Status:          "CONFLICT",
+			CheckedAt:       time.Now().UTC(),
+		}, nil
+	}
+
+	// Check 3: road capacity along the full path
+	if details, err := checkRoadCapacity(ctx, tx, req, arrivalTime); err != nil {
+		return HoldConflictResponse{}, err
+	} else if details != "" {
+		ct := "ROAD_CAPACITY"
+		return HoldConflictResponse{
+			JourneyID:       req.JourneyID,
+			IsConflict:      true,
+			ConflictType:    &ct,
+			ConflictDetails: &details,
+			Status:          "CONFLICT",
+			CheckedAt:       time.Now().UTC(),
+		}, nil
+	}
+
+	// No conflict — increment capacity (same as recordBookingSlot but without booked_slots insert)
+	cells, err := pathGridCellsForRequest(ctx, req)
+	if err != nil {
+		return HoldConflictResponse{}, err
+	}
+	for i, cell := range cells {
+		t := cellTime(req.DepartureTime.Time, arrivalTime, i, len(cells))
+		if err := incrementCapacity(ctx, tx, cell.lat, cell.lng, t); err != nil {
+			return HoldConflictResponse{}, err
+		}
+	}
+
+	holdID := uuid.New().String()
+	expiresAt := time.Now().UTC().Add(30 * time.Second)
+
+	if err := createHoldInTx(ctx, tx, req, arrivalTime, holdID, expiresAt); err != nil {
+		return HoldConflictResponse{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return HoldConflictResponse{}, fmt.Errorf("commit hold transaction: %w", err)
+	}
+
+	return HoldConflictResponse{
+		HoldID:    holdID,
+		JourneyID: req.JourneyID,
+		IsConflict: false,
+		Status:    "HELD",
+		ExpiresAt: expiresAt,
+		CheckedAt: time.Now().UTC(),
+	}, nil
+}
+
 // cancelBookingSlot marks the booking inactive AND decrements road capacity for
 // every grid cell along the path, so those slots become available again.
 //
@@ -407,18 +530,19 @@ func cancelBookingSlot(ctx context.Context, journeyID string) error {
 	}
 	defer tx.Rollback(ctx)
 
-	// Deactivate and retrieve path endpoints in one statement.
+	// Deactivate and retrieve path endpoints (including route_id) in one statement.
 	var originLat, originLng, destLat, destLng float64
 	var departureTime, arrivalTime time.Time
+	var routeID string
 	err = tx.QueryRow(ctx, `
 		UPDATE booked_slots
 		SET is_active = false
 		WHERE journey_id = $1 AND is_active = true
 		RETURNING origin_lat, origin_lng, destination_lat, destination_lng,
-		          departure_time, arrival_time
+		          departure_time, arrival_time, COALESCE(route_id, '')
 	`, journeyID).Scan(
 		&originLat, &originLng, &destLat, &destLng,
-		&departureTime, &arrivalTime,
+		&departureTime, &arrivalTime, &routeID,
 	)
 	if err != nil {
 		if isNoRows(err) {
@@ -427,8 +551,21 @@ func cancelBookingSlot(ctx context.Context, journeyID string) error {
 		return err
 	}
 
+	// Resolve cells using the same waypoint-aware logic as the original booking.
+	mockReq := ConflictCheckRequest{
+		RouteID:        routeID,
+		OriginLat:      originLat,
+		OriginLng:      originLng,
+		DestinationLat: destLat,
+		DestinationLng: destLng,
+	}
+	cells, cellErr := pathGridCellsForRequest(ctx, mockReq)
+	if cellErr != nil {
+		log.Printf("cancelBookingSlot: could not resolve cells for journey %s (falling back to straight-line): %v", journeyID, cellErr)
+		cells = pathGridCells(originLat, originLng, destLat, destLng)
+	}
+
 	// Free capacity on every cell along the cancelled journey's path.
-	cells := pathGridCells(originLat, originLng, destLat, destLng)
 	for i, cell := range cells {
 		t := cellTime(departureTime, arrivalTime, i, len(cells))
 		if err := decrementCapacity(ctx, tx, cell.lat, cell.lng, t); err != nil {
