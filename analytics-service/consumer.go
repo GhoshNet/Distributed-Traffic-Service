@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"strings"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -21,11 +25,28 @@ const (
 var redisClient *redis.Client
 
 func initRedis(redisURL string) error {
-	opts, err := redis.ParseURL(redisURL)
-	if err != nil {
-		return fmt.Errorf("invalid Redis URL: %w", err)
+	sentinelAddrs := os.Getenv("REDIS_SENTINEL_ADDRS")
+	masterName := os.Getenv("REDIS_MASTER_NAME")
+	if masterName == "" {
+		masterName = "mymaster"
 	}
-	redisClient = redis.NewClient(opts)
+
+	if sentinelAddrs != "" {
+		addrs := strings.Split(sentinelAddrs, ",")
+		redisClient = redis.NewFailoverClient(&redis.FailoverOptions{
+			MasterName:    masterName,
+			SentinelAddrs: addrs,
+			DB:            5,
+		})
+		log.Printf("Redis: using Sentinel (%d sentinels, master=%s, db=5)", len(addrs), masterName)
+	} else {
+		opts, err := redis.ParseURL(redisURL)
+		if err != nil {
+			return fmt.Errorf("invalid Redis URL: %w", err)
+		}
+		redisClient = redis.NewClient(opts)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return redisClient.Ping(ctx).Err()
@@ -123,10 +144,16 @@ func setupAnalyticsChannel(conn *amqp.Connection) error {
 	log.Println("Analytics consumer started")
 	go func() {
 		for msg := range msgs {
+			if isDuplicate(msg) {
+				log.Printf("Skipping duplicate analytics event (msgID=%s)", msg.MessageId)
+				msg.Ack(false)
+				continue
+			}
 			if err := handleEvent(msg.Body, msg.RoutingKey); err != nil {
 				log.Printf("Error processing message: %v", err)
 				msg.Nack(false, false)
 			} else {
+				markProcessed(msg)
 				msg.Ack(false)
 			}
 		}
@@ -134,6 +161,38 @@ func setupAnalyticsChannel(conn *amqp.Connection) error {
 	}()
 
 	return nil
+}
+
+// msgDedupeKey returns a stable key for a message: MessageId if set, otherwise SHA-256 of body.
+func msgDedupeKey(msg amqp.Delivery) string {
+	if msg.MessageId != "" {
+		return "analytics:processed:" + msg.MessageId
+	}
+	h := sha256.Sum256(msg.Body)
+	return "analytics:processed:" + hex.EncodeToString(h[:])
+}
+
+func isDuplicate(msg amqp.Delivery) bool {
+	if redisClient == nil {
+		return false
+	}
+	key := msgDedupeKey(msg)
+	exists, err := redisClient.Exists(context.Background(), key).Result()
+	if err != nil {
+		log.Printf("Redis dedup check error: %v", err)
+		return false
+	}
+	return exists > 0
+}
+
+func markProcessed(msg amqp.Delivery) {
+	if redisClient == nil {
+		return
+	}
+	key := msgDedupeKey(msg)
+	if err := redisClient.Set(context.Background(), key, 1, 24*time.Hour).Err(); err != nil {
+		log.Printf("Redis dedup mark error: %v", err)
+	}
 }
 
 func handleEvent(body []byte, routingKey string) error {

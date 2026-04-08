@@ -6,6 +6,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -34,6 +35,7 @@ func initDB(databaseURL string) error {
 }
 
 func createTables() error {
+	// Two-step: create tables, then idempotently ensure unique constraint on hourly_stats.hour
 	_, err := db.Exec(context.Background(), `
 		CREATE TABLE IF NOT EXISTS event_logs (
 			id            VARCHAR(36) PRIMARY KEY,
@@ -66,6 +68,13 @@ func createTables() error {
 
 		CREATE INDEX IF NOT EXISTS idx_hourly_hour   ON hourly_stats (hour);
 		CREATE INDEX IF NOT EXISTS idx_hourly_region ON hourly_stats (hour, region);
+	`)
+	if err != nil {
+		return err
+	}
+	// Add unique constraint on hour if it doesn't exist (handles pre-existing tables)
+	_, err = db.Exec(context.Background(), `
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_hourly_hour_unique ON hourly_stats (hour);
 	`)
 	return err
 }
@@ -102,6 +111,61 @@ func getEventsLastHour(ctx context.Context) (int64, error) {
 		"SELECT COUNT(*) FROM event_logs WHERE created_at >= $1", oneHourAgo,
 	).Scan(&count)
 	return count, err
+}
+
+// runHourlyRollup aggregates event_logs into hourly_stats once per hour.
+// It fills in the previous completed hour on each tick so no event is missed.
+func runHourlyRollup() {
+	// Run immediately on startup to catch any missed hours, then every hour.
+	rollupHour(time.Now().UTC().Truncate(time.Hour).Add(-time.Hour))
+
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for t := range ticker.C {
+		hour := t.UTC().Truncate(time.Hour).Add(-time.Hour)
+		rollupHour(hour)
+	}
+}
+
+func rollupHour(hour time.Time) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	hourEnd := hour.Add(time.Hour)
+
+	var total, confirmed, rejected, cancelled int
+	err := db.QueryRow(ctx, `
+		SELECT
+			COUNT(*),
+			COUNT(*) FILTER (WHERE event_type = 'journey.confirmed'),
+			COUNT(*) FILTER (WHERE event_type = 'journey.rejected'),
+			COUNT(*) FILTER (WHERE event_type = 'journey.cancelled')
+		FROM event_logs
+		WHERE created_at >= $1 AND created_at < $2
+	`, hour, hourEnd).Scan(&total, &confirmed, &rejected, &cancelled)
+	if err != nil {
+		log.Printf("Hourly rollup query failed for %s: %v", hour.Format(time.RFC3339), err)
+		return
+	}
+	if total == 0 {
+		return // nothing to record
+	}
+
+	_, err = db.Exec(ctx, `
+		INSERT INTO hourly_stats (id, hour, total_bookings, confirmed, rejected, cancelled)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (hour) DO UPDATE SET
+			total_bookings = EXCLUDED.total_bookings,
+			confirmed      = EXCLUDED.confirmed,
+			rejected       = EXCLUDED.rejected,
+			cancelled      = EXCLUDED.cancelled
+	`, uuid.New().String(), hour, total, confirmed, rejected, cancelled)
+	if err != nil {
+		log.Printf("Hourly rollup insert failed for %s: %v", hour.Format(time.RFC3339), err)
+		return
+	}
+	log.Printf("Hourly rollup: %s — total=%d confirmed=%d rejected=%d cancelled=%d",
+		hour.Format("2006-01-02 15:00"), total, confirmed, rejected, cancelled)
 }
 
 func queryEventHistory(ctx context.Context, eventType string, limit, offset int) ([]EventLog, error) {

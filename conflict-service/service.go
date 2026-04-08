@@ -59,8 +59,16 @@ func checkConflicts(ctx context.Context, req ConflictCheckRequest) (ConflictChec
 	bufferedDeparture := req.DepartureTime.Time.Add(-journeyBufferMinutes * time.Minute)
 	bufferedArrival := arrivalTime.Add(journeyBufferMinutes * time.Minute)
 
+	// Single serializable transaction for the entire check+reserve — prevents race conditions
+	// where two concurrent bookings both pass the capacity check.
+	tx, err := db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return ConflictCheckResponse{}, err
+	}
+	defer tx.Rollback(ctx)
+
 	// Check 1: driver time overlap
-	if conflict, err := checkDriverOverlap(ctx, req.UserID, bufferedDeparture, bufferedArrival, req.JourneyID); err != nil {
+	if conflict, err := checkDriverOverlap(ctx, tx, req.UserID, bufferedDeparture, bufferedArrival, req.JourneyID); err != nil {
 		return ConflictCheckResponse{}, err
 	} else if conflict != nil {
 		ct := "TIME_OVERLAP"
@@ -79,7 +87,7 @@ func checkConflicts(ctx context.Context, req ConflictCheckRequest) (ConflictChec
 	}
 
 	// Check 2: vehicle time overlap
-	if conflict, err := checkVehicleOverlap(ctx, req.VehicleRegistration, bufferedDeparture, bufferedArrival, req.JourneyID); err != nil {
+	if conflict, err := checkVehicleOverlap(ctx, tx, req.VehicleRegistration, bufferedDeparture, bufferedArrival, req.JourneyID); err != nil {
 		return ConflictCheckResponse{}, err
 	} else if conflict != nil {
 		ct := "TIME_OVERLAP"
@@ -98,8 +106,8 @@ func checkConflicts(ctx context.Context, req ConflictCheckRequest) (ConflictChec
 		}, nil
 	}
 
-	// Check 3: road capacity
-	if details, err := checkRoadCapacity(ctx, req, arrivalTime); err != nil {
+	// Check 3: road capacity (uses SELECT FOR UPDATE to lock affected rows)
+	if details, err := checkRoadCapacity(ctx, tx, req, arrivalTime); err != nil {
 		return ConflictCheckResponse{}, err
 	} else if details != "" {
 		ct := "ROAD_CAPACITY"
@@ -112,9 +120,13 @@ func checkConflicts(ctx context.Context, req ConflictCheckRequest) (ConflictChec
 		}, nil
 	}
 
-	// No conflict — record the slot
-	if err := recordBookingSlot(ctx, req, arrivalTime); err != nil {
+	// No conflict — record the slot and commit atomically
+	if err := recordBookingSlot(ctx, tx, req, arrivalTime); err != nil {
 		return ConflictCheckResponse{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return ConflictCheckResponse{}, fmt.Errorf("commit conflict check transaction: %w", err)
 	}
 
 	return ConflictCheckResponse{
@@ -129,8 +141,8 @@ type bookedSlot struct {
 	arrivalTime   time.Time
 }
 
-func checkDriverOverlap(ctx context.Context, userID string, departure, arrival time.Time, excludeJourneyID string) (*bookedSlot, error) {
-	row := db.QueryRow(ctx, `
+func checkDriverOverlap(ctx context.Context, tx pgx.Tx, userID string, departure, arrival time.Time, excludeJourneyID string) (*bookedSlot, error) {
+	row := tx.QueryRow(ctx, `
 		SELECT departure_time, arrival_time FROM booked_slots
 		WHERE user_id = $1
 		  AND is_active = true
@@ -138,6 +150,7 @@ func checkDriverOverlap(ctx context.Context, userID string, departure, arrival t
 		  AND departure_time < $3
 		  AND arrival_time > $4
 		LIMIT 1
+		FOR UPDATE
 	`, userID, excludeJourneyID, arrival, departure)
 
 	var s bookedSlot
@@ -150,8 +163,8 @@ func checkDriverOverlap(ctx context.Context, userID string, departure, arrival t
 	return &s, nil
 }
 
-func checkVehicleOverlap(ctx context.Context, vehicleReg string, departure, arrival time.Time, excludeJourneyID string) (*bookedSlot, error) {
-	row := db.QueryRow(ctx, `
+func checkVehicleOverlap(ctx context.Context, tx pgx.Tx, vehicleReg string, departure, arrival time.Time, excludeJourneyID string) (*bookedSlot, error) {
+	row := tx.QueryRow(ctx, `
 		SELECT departure_time, arrival_time FROM booked_slots
 		WHERE vehicle_registration = $1
 		  AND is_active = true
@@ -159,6 +172,7 @@ func checkVehicleOverlap(ctx context.Context, vehicleReg string, departure, arri
 		  AND departure_time < $3
 		  AND arrival_time > $4
 		LIMIT 1
+		FOR UPDATE
 	`, vehicleReg, excludeJourneyID, arrival, departure)
 
 	var s bookedSlot
@@ -171,18 +185,21 @@ func checkVehicleOverlap(ctx context.Context, vehicleReg string, departure, arri
 	return &s, nil
 }
 
-func checkRoadCapacity(ctx context.Context, req ConflictCheckRequest, arrivalTime time.Time) (string, error) {
+// checkRoadCapacity checks grid capacity and locks the row (SELECT FOR UPDATE) to
+// prevent concurrent bookings from both passing when capacity is nearly full.
+func checkRoadCapacity(ctx context.Context, tx pgx.Tx, req ConflictCheckRequest, arrivalTime time.Time) (string, error) {
 	originGridLat := roundGrid(req.OriginLat)
 	originGridLng := roundGrid(req.OriginLng)
 
 	var count int
-	err := db.QueryRow(ctx, `
+	err := tx.QueryRow(ctx, `
 		SELECT COUNT(*) FROM road_segment_capacity
 		WHERE grid_lat = $1
 		  AND grid_lng = $2
 		  AND time_slot_start <= $3
 		  AND time_slot_end > $3
 		  AND current_bookings >= max_capacity
+		FOR UPDATE
 	`, originGridLat, originGridLng, req.DepartureTime.Time).Scan(&count)
 	if err != nil {
 		return "", err
@@ -194,13 +211,14 @@ func checkRoadCapacity(ctx context.Context, req ConflictCheckRequest, arrivalTim
 	destGridLat := roundGrid(req.DestinationLat)
 	destGridLng := roundGrid(req.DestinationLng)
 
-	err = db.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		SELECT COUNT(*) FROM road_segment_capacity
 		WHERE grid_lat = $1
 		  AND grid_lng = $2
 		  AND time_slot_start <= $3
 		  AND time_slot_end > $3
 		  AND current_bookings >= max_capacity
+		FOR UPDATE
 	`, destGridLat, destGridLng, arrivalTime).Scan(&count)
 	if err != nil {
 		return "", err
@@ -212,14 +230,10 @@ func checkRoadCapacity(ctx context.Context, req ConflictCheckRequest, arrivalTim
 	return "", nil
 }
 
-func recordBookingSlot(ctx context.Context, req ConflictCheckRequest, arrivalTime time.Time) error {
-	tx, err := db.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-
-	_, err = tx.Exec(ctx, `
+// recordBookingSlot inserts the booking and increments capacity within the given transaction.
+// The caller is responsible for committing.
+func recordBookingSlot(ctx context.Context, tx pgx.Tx, req ConflictCheckRequest, arrivalTime time.Time) error {
+	_, err := tx.Exec(ctx, `
 		INSERT INTO booked_slots
 			(id, journey_id, user_id, vehicle_registration, departure_time, arrival_time,
 			 origin_lat, origin_lng, destination_lat, destination_lng, is_active)
@@ -238,11 +252,7 @@ func recordBookingSlot(ctx context.Context, req ConflictCheckRequest, arrivalTim
 	if err := incrementCapacity(ctx, tx, req.OriginLat, req.OriginLng, req.DepartureTime.Time); err != nil {
 		return err
 	}
-	if err := incrementCapacity(ctx, tx, req.DestinationLat, req.DestinationLng, arrivalTime); err != nil {
-		return err
-	}
-
-	return tx.Commit(ctx)
+	return incrementCapacity(ctx, tx, req.DestinationLat, req.DestinationLng, arrivalTime)
 }
 
 func incrementCapacity(ctx context.Context, tx pgx.Tx, lat, lng float64, t time.Time) error {

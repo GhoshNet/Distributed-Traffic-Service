@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -137,6 +138,11 @@ func handleEvent(body []byte, routingKey string) error {
 	}
 
 	if err := cancelBookingSlot(context.Background(), journeyID); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			// Already cancelled (idempotent) — ack and move on
+			log.Printf("Booking slot for journey %s already inactive (duplicate event)", journeyID)
+			return nil
+		}
 		return fmt.Errorf("cancel booking slot %s: %w", journeyID, err)
 	}
 	log.Printf("Processed cancellation for journey %s", journeyID)

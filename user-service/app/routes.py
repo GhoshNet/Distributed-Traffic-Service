@@ -3,12 +3,14 @@ User Service - API routes.
 """
 
 import logging
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .database import get_db
 from .service import UserService
 from shared.auth import get_current_user
+from shared.messaging import get_broker
 from shared.schemas import (
     UserRegisterRequest,
     UserLoginRequest,
@@ -37,7 +39,25 @@ async def register(request: UserRegisterRequest, db: AsyncSession = Depends(get_
         # Ensure default registrations are only DRIVERs
         if request.role != UserRole.DRIVER:
             request.role = UserRole.DRIVER
-        return await UserService.register(db, request)
+        user = await UserService.register(db, request)
+
+        # Publish user.registered event (best-effort — don't fail registration if broker is down)
+        try:
+            broker = await get_broker()
+            await broker.publish(
+                routing_key="user.registered",
+                data={
+                    "user_id": user.id,
+                    "email": user.email,
+                    "full_name": user.full_name,
+                    "license_number": user.license_number,
+                    "registered_at": datetime.utcnow().isoformat(),
+                },
+            )
+        except Exception as e:
+            logger.warning(f"Could not publish user.registered event: {e}")
+
+        return user
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
 

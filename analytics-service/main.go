@@ -35,6 +35,9 @@ func main() {
 		log.Println("Connected to RabbitMQ and started consumer")
 	}
 
+	// Background job: aggregate hourly_stats every hour
+	go runHourlyRollup()
+
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(corsMiddleware)
@@ -42,6 +45,8 @@ func main() {
 	r.Get("/health", healthHandler)
 	r.Get("/api/analytics/stats", statsHandler)
 	r.Get("/api/analytics/events", eventsHandler)
+	r.Get("/api/analytics/hourly", hourlyStatsHandler)
+	r.Get("/api/analytics/replica-lag", replicaLagHandler)
 	r.Get("/api/analytics/health/services", serviceHealthHandler)
 
 	srv := &http.Server{
