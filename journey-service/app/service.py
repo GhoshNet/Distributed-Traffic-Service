@@ -75,6 +75,7 @@ class JourneyService:
             vehicle_registration=request.vehicle_registration,
             vehicle_type=request.vehicle_type.value,
             status=JourneyStatus.PENDING.value,
+            route_id=request.route_id,
             idempotency_key=request.idempotency_key,
         )
 

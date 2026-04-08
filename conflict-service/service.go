@@ -44,6 +44,9 @@ type ConflictCheckRequest struct {
 	DepartureTime            FlexTime `json:"departure_time"`
 	EstimatedDurationMinutes int      `json:"estimated_duration_minutes"`
 	VehicleRegistration      string   `json:"vehicle_registration"`
+	// RouteID is optional. When set, the conflict service uses the predefined
+	// real-road waypoints for that route instead of a straight-line path.
+	RouteID string `json:"route_id,omitempty"`
 }
 
 type ConflictCheckResponse struct {
@@ -236,6 +239,54 @@ func pathGridCells(originLat, originLng, destLat, destLng float64) []gridCell {
 	return cells
 }
 
+// pathGridCellsFromWaypoints builds the full set of grid cells by walking each
+// consecutive pair of waypoints as a straight-line segment and combining the
+// results. This gives a piecewise-linear approximation of the real road path
+// instead of a single straight line from origin to destination.
+//
+// Example — Dublin → Galway via Athlone:
+//
+//	Dublin→Leixlip, Leixlip→Kinnegad, Kinnegad→Athlone, Athlone→Ballinasloe, Ballinasloe→Galway
+//
+// Each segment produces its own grid cells; the union is deduplicated and
+// returned in route order. A booking for Athlone→Ballinasloe will share cells
+// with this route and be rejected — whereas a straight Dublin→Galway line
+// might miss those cells entirely depending on the angle.
+func pathGridCellsFromWaypoints(waypoints []Waypoint) []gridCell {
+	seen := make(map[gridCell]bool)
+	var cells []gridCell
+	for i := 0; i < len(waypoints)-1; i++ {
+		segment := pathGridCells(
+			waypoints[i].Lat, waypoints[i].Lng,
+			waypoints[i+1].Lat, waypoints[i+1].Lng,
+		)
+		for _, cell := range segment {
+			if !seen[cell] {
+				seen[cell] = true
+				cells = append(cells, cell)
+			}
+		}
+	}
+	return cells
+}
+
+// pathGridCellsForRequest returns the grid cells for a booking request.
+// If the request carries a RouteID and that route exists in the DB, it uses
+// the real road waypoints. Otherwise it falls back to straight-line.
+func pathGridCellsForRequest(ctx context.Context, req ConflictCheckRequest) ([]gridCell, error) {
+	if req.RouteID != "" {
+		wps, err := loadRouteWaypoints(ctx, req.RouteID)
+		if err != nil {
+			return nil, fmt.Errorf("load route waypoints: %w", err)
+		}
+		if len(wps) >= 2 {
+			return pathGridCellsFromWaypoints(wps), nil
+		}
+		// Route not found or has < 2 waypoints — fall through to straight-line
+	}
+	return pathGridCells(req.OriginLat, req.OriginLng, req.DestinationLat, req.DestinationLng), nil
+}
+
 // cellTime returns the interpolated timestamp at which a vehicle reaches cell i
 // of n total cells, given departure and arrival times.
 //
@@ -261,7 +312,10 @@ func cellTime(departure, arrival time.Time, i, n int) time.Time {
 // cell is checked at its interpolated time. A→D will lock cells covering B and C,
 // so a B→C booking that arrives during the same time window is rejected.
 func checkRoadCapacity(ctx context.Context, tx pgx.Tx, req ConflictCheckRequest, arrivalTime time.Time) (string, error) {
-	cells := pathGridCells(req.OriginLat, req.OriginLng, req.DestinationLat, req.DestinationLng)
+	cells, err := pathGridCellsForRequest(ctx, req)
+	if err != nil {
+		return "", err
+	}
 
 	for i, cell := range cells {
 		t := cellTime(req.DepartureTime.Time, arrivalTime, i, len(cells))
@@ -308,7 +362,10 @@ func recordBookingSlot(ctx context.Context, tx pgx.Tx, req ConflictCheckRequest,
 		return err
 	}
 
-	cells := pathGridCells(req.OriginLat, req.OriginLng, req.DestinationLat, req.DestinationLng)
+	cells, err := pathGridCellsForRequest(ctx, req)
+	if err != nil {
+		return err
+	}
 	for i, cell := range cells {
 		t := cellTime(req.DepartureTime.Time, arrivalTime, i, len(cells))
 		if err := incrementCapacity(ctx, tx, cell.lat, cell.lng, t); err != nil {

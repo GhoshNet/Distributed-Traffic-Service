@@ -124,6 +124,10 @@ class JourneyCreateRequest(BaseModel):
     estimated_duration_minutes: int = Field(..., gt=0, le=1440, description="Estimated duration in minutes")
     vehicle_registration: str = Field(..., description="Vehicle registration plate")
     vehicle_type: VehicleType = Field(default=VehicleType.CAR, description="Type of vehicle")
+    route_id: Optional[str] = Field(
+        default=None,
+        description="Predefined route ID (e.g. 'dublin-galway'). When set, conflict check uses real road waypoints."
+    )
     idempotency_key: Optional[str] = Field(
         default=None,
         description="Client-generated idempotency key for safe retries"
@@ -175,6 +179,7 @@ class ConflictCheckRequest(BaseModel):
     estimated_duration_minutes: int
     vehicle_registration: str
     vehicle_type: VehicleType = Field(default=VehicleType.CAR)
+    route_id: Optional[str] = None
 
 
 class ConflictCheckResponse(BaseModel):

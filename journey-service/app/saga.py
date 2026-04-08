@@ -95,6 +95,7 @@ class BookingSaga:
             estimated_duration_minutes=journey.estimated_duration_minutes,
             vehicle_registration=journey.vehicle_registration,
             vehicle_type=journey.vehicle_type,
+            route_id=getattr(journey, "route_id", None),
         )
 
         cb = get_circuit_breaker("conflict-service", failure_threshold=3, reset_timeout=30.0)
