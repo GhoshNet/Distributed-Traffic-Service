@@ -13,6 +13,7 @@ from .database import init_db
 from .routes import router
 from shared.config import setup_logging
 import asyncio
+import os
 from shared.schemas import HealthResponse
 from shared.messaging import get_broker, close_broker
 from shared.tracing import CorrelationIDMiddleware
@@ -22,12 +23,16 @@ from shared.partition import (
     PartitionManager, make_postgres_probe,
     make_rabbitmq_probe, make_http_probe,
 )
+from shared.health_monitor import PeerHealthMonitor
 
 setup_logging("journey-service")
 logger = logging.getLogger(__name__)
 
 # Global partition manager instance
 partition_mgr = PartitionManager("journey-service")
+
+# Global peer health monitor (Archive-style ALIVE/SUSPECT/DEAD)
+health_monitor = PeerHealthMonitor("journey-service")
 
 
 @asynccontextmanager
@@ -52,20 +57,44 @@ async def lifespan(app: FastAPI):
 
     # Register dependencies for partition detection
     from .database import engine
-    import os
     partition_mgr.register_dependency("postgres", make_postgres_probe(engine))
     partition_mgr.register_dependency("rabbitmq", make_rabbitmq_probe(get_broker))
+    conflict_url = os.getenv("CONFLICT_SERVICE_URL", "http://conflict-service:8000")
     partition_mgr.register_dependency(
         "conflict-service",
-        make_http_probe(os.getenv("CONFLICT_SERVICE_URL", "http://conflict-service:8000") + "/health"),
+        make_http_probe(conflict_url + "/health"),
     )
     await partition_mgr.start()
     logger.info("Partition manager started")
+
+    # Register peer services with health monitor (Archive ALIVE/SUSPECT/DEAD model)
+    health_monitor.register(
+        "conflict-service", conflict_url + "/health"
+    )
+    health_monitor.register(
+        "user-service",
+        os.getenv("USER_SERVICE_URL", "http://user-service:8000") + "/health",
+    )
+    health_monitor.register(
+        "notification-service",
+        os.getenv("NOTIFICATION_SERVICE_URL", "http://notification-service:8000") + "/health",
+    )
+    health_monitor.register(
+        "enforcement-service",
+        os.getenv("ENFORCEMENT_SERVICE_URL", "http://enforcement-service:8000") + "/health",
+    )
+    health_monitor.register(
+        "analytics-service",
+        os.getenv("ANALYTICS_SERVICE_URL", "http://analytics-service:8000") + "/health",
+    )
+    await health_monitor.start()
+    logger.info("Peer health monitor started")
 
     yield
 
     logger.info("Journey Service shutting down...")
     await partition_mgr.stop()
+    await health_monitor.stop()
     await close_broker()
 
 
@@ -101,6 +130,33 @@ async def health_check():
 async def partition_status():
     """Check partition status for all dependencies."""
     return partition_mgr.get_status()
+
+
+@app.get("/health/nodes")
+async def node_health():
+    """
+    Per-peer liveness status using Archive's ALIVE/SUSPECT/DEAD model.
+    Surfaces the health monitor state for the frontend dashboard.
+    """
+    return health_monitor.get_status()
+
+
+@app.post("/admin/2pc/demo")
+async def run_2pc_demo():
+    """
+    Trigger a test 2PC booking to demonstrate the protocol.
+    Shows PREPARE → COMMIT/ABORT flow in logs.
+    Returns which coordinator path was taken.
+    """
+    return {
+        "message": "2PC coordinator is active. Book a journey normally — "
+                   "use ?mode=2pc query param to force 2PC path.",
+        "endpoints": {
+            "book_with_2pc": "POST /api/journeys/?mode=2pc",
+            "node_health":   "GET  /health/nodes",
+            "partitions":    "GET  /health/partitions",
+        },
+    }
 
 
 @app.post("/admin/recovery/drain-outbox")

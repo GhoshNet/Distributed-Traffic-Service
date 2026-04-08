@@ -30,13 +30,23 @@ router = APIRouter(prefix="/api/journeys", tags=["Journeys"])
 )
 async def create_journey(
     request: JourneyCreateRequest,
+    mode: Optional[str] = Query(
+        default=None,
+        description="Booking protocol: 'saga' (default) or '2pc' (Two-Phase Commit)",
+    ),
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Book a new journey. The system will check for conflicts before confirming."""
+    """
+    Book a new journey.
+
+    Use **?mode=2pc** to use the Two-Phase Commit coordinator (stronger consistency)
+    instead of the default Saga pattern. Both paths check road capacity via the
+    Conflict Service; 2PC adds explicit compensating cancellation on commit failure.
+    """
     try:
         return await JourneyService.create_journey(
-            db, current_user["user_id"], request
+            db, current_user["user_id"], request, use_2pc=(mode == "2pc")
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

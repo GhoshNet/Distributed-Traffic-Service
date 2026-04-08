@@ -14,6 +14,7 @@ from sqlalchemy import select, and_, func
 
 from .database import Journey, IdempotencyRecord
 from .saga import BookingSaga
+from .coordinator import TwoPhaseCoordinator
 from shared.schemas import (
     JourneyCreateRequest,
     JourneyResponse,
@@ -32,7 +33,8 @@ class JourneyService:
 
     @staticmethod
     async def create_journey(
-        db: AsyncSession, user_id: str, request: JourneyCreateRequest
+        db: AsyncSession, user_id: str, request: JourneyCreateRequest,
+        use_2pc: bool = False,
     ) -> JourneyResponse:
         """Create a new journey booking (triggers the booking saga)."""
 
@@ -88,10 +90,16 @@ class JourneyService:
             db.add(IdempotencyRecord(key=request.idempotency_key, journey_id=journey_id))
             await db.commit()
 
-        logger.info(f"Journey {journey_id} created as PENDING for user {user_id}")
+        logger.info(
+            f"Journey {journey_id} created as PENDING for user {user_id} "
+            f"(protocol={'2PC' if use_2pc else 'Saga'})"
+        )
 
-        # Execute the booking saga
-        final_status, rejection_reason = await BookingSaga.execute(journey)
+        # Execute the booking saga OR Two-Phase Commit coordinator
+        if use_2pc:
+            final_status, rejection_reason = await TwoPhaseCoordinator.execute(journey, db)
+        else:
+            final_status, rejection_reason = await BookingSaga.execute(journey)
 
         # Determine event type
         if final_status == JourneyStatus.CONFIRMED:

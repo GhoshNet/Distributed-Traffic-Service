@@ -13,6 +13,14 @@ let selectedOrigin = null;
 let selectedDest = null;
 let geocodeTimers = {};
 
+// Road network state (predefined Irish routes from conflict-service)
+let predefinedRoutes = [];
+let roadNetworkLayer = null;
+let roadNetworkVisible = true;
+
+// Route colour palette (one per predefined route)
+const ROUTE_COLORS = ['#00b4d8', '#f77f00', '#06d6a0', '#e63946', '#8338ec', '#ffbe0b'];
+
 // Routing logic
 if (token && user) enterApp();
 else document.getElementById('auth-screen').style.display = 'flex';
@@ -86,6 +94,7 @@ function enterApp() {
   connectWS();
   setupAutocomplete();
   loadVehicles();
+  loadPredefinedRoutes();   // fetch road network from conflict-service
   // Set default departure time
   let d = new Date(); d.setHours(d.getHours()+1);
   document.getElementById('j-depart').value = d.toISOString().slice(0,16);
@@ -104,6 +113,7 @@ function go(view) {
   }
   if(view === 'dash') loadDashboard();
   if(view === 'journeys') { loadJourneys(); loadVehicles(); }
+  if(view === 'simulate') { loadSimStats(); loadNodeHealth(); }
 }
 
 function initMap() {
@@ -254,6 +264,11 @@ async function bookJourney(e) {
     // Parse "REGISTRATION|TYPE" from the select value
     const [plate, vtype] = selectedVehicle.split('|');
 
+    // Attach route_id if a quick-route was selected
+    const quickRouteId = document.getElementById('j-quick-route').value || undefined;
+    const protocol = document.getElementById('j-protocol').value || 'saga';
+    const bookingUrl = protocol === '2pc' ? '/api/journeys/?mode=2pc' : '/api/journeys/';
+
     const payload = {
         origin: selectedOrigin.name, destination: selectedDest.name,
         origin_lat: selectedOrigin.lat, origin_lng: selectedOrigin.lng,
@@ -261,11 +276,12 @@ async function bookJourney(e) {
         departure_time: new Date(document.getElementById('j-depart').value).toISOString(),
         estimated_duration_minutes: parseInt(document.getElementById('j-dur').value),
         vehicle_registration: plate,
-        vehicle_type: vtype
+        vehicle_type: vtype,
+        ...(quickRouteId ? { route_id: quickRouteId } : {}),
     };
 
     try {
-        const r = await authFetch('/api/journeys/', {
+        const r = await authFetch(bookingUrl, {
             method:'POST', headers:{'Content-Type':'application/json'},
             body: JSON.stringify(payload)
         });
@@ -411,6 +427,9 @@ async function removeVehicle(vehicleId) {
 }
 
 async function loadDashboard() {
+    // Load node health (Archive ALIVE/SUSPECT/DEAD model)
+    loadNodeHealth();
+
     // Load analytics stats
     const r = await authFetch('/api/analytics/stats');
     if(r.ok) {
@@ -457,7 +476,300 @@ async function loadDashboard() {
     } catch(e) { console.warn('Points history fetch failed:', e); }
 }
 
+// =============================================
+// Road Network — fetch predefined Irish routes and draw on map
+// Ported from Archive/models/road_network.py (NetworkX graph → Leaflet polylines)
+// =============================================
+
+async function loadPredefinedRoutes() {
+    try {
+        const r = await fetch(API + '/api/conflicts/routes');
+        if (!r.ok) return;
+        const data = await r.json();
+        predefinedRoutes = data.routes || [];
+        renderRoadNetwork();
+        populateQuickRoutes();
+    } catch(err) {
+        console.warn('Could not load predefined routes:', err);
+    }
+}
+
+function renderRoadNetwork() {
+    if (!mapInstance) return;
+    if (roadNetworkLayer) roadNetworkLayer.remove();
+
+    roadNetworkLayer = L.layerGroup();
+    const legendEl = document.getElementById('route-legend');
+    if (legendEl) legendEl.innerHTML = '';
+
+    predefinedRoutes.forEach((route, idx) => {
+        const color = ROUTE_COLORS[idx % ROUTE_COLORS.length];
+        const wps = route.waypoints || [];
+        if (wps.length >= 2) {
+            const latlngs = wps.map(w => [w.lat, w.lng]);
+            // Draw the real road path as a polyline
+            const line = L.polyline(latlngs, {
+                color, weight: 3, opacity: 0.65, dashArray: '8,4'
+            }).bindPopup(
+                `<strong>${route.name}</strong><br>${route.description || ''}<br>` +
+                `Est. ${route.estimated_duration_minutes} min`
+            );
+            roadNetworkLayer.addLayer(line);
+
+            // Waypoint markers (smaller)
+            wps.forEach((wp, wi) => {
+                const isEndpoint = wi === 0 || wi === wps.length - 1;
+                const circle = L.circleMarker([wp.lat, wp.lng], {
+                    radius: isEndpoint ? 6 : 4,
+                    color, fillColor: color, fillOpacity: isEndpoint ? 1 : 0.5,
+                    weight: isEndpoint ? 2 : 1,
+                }).bindPopup(`<strong>${wp.name}</strong><br>${route.name}`);
+                roadNetworkLayer.addLayer(circle);
+            });
+        }
+
+        // Legend entry
+        if (legendEl) {
+            legendEl.insertAdjacentHTML('beforeend', `
+                <div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12px">
+                    <div style="width:28px;height:3px;background:${color};border-radius:2px;flex-shrink:0"></div>
+                    <span>${route.name}</span>
+                    <span style="color:var(--text-muted);margin-left:auto">${route.estimated_duration_minutes}min</span>
+                </div>
+            `);
+        }
+    });
+
+    if (roadNetworkVisible) roadNetworkLayer.addTo(mapInstance);
+}
+
+function toggleRoadNetwork() {
+    if (!roadNetworkLayer) return;
+    roadNetworkVisible = !roadNetworkVisible;
+    if (roadNetworkVisible) {
+        roadNetworkLayer.addTo(mapInstance);
+        showToast('Road network shown', 'info');
+    } else {
+        roadNetworkLayer.remove();
+        showToast('Road network hidden', 'info');
+    }
+}
+
+// =============================================
+// Quick Route selector — auto-fill coordinates from predefined routes
+// Mirrors Archive booking_service.book_journey() route lookup
+// =============================================
+
+function populateQuickRoutes() {
+    const sel = document.getElementById('j-quick-route');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">— or use free-form search below —</option>';
+    predefinedRoutes.forEach(r => {
+        sel.insertAdjacentHTML('beforeend',
+            `<option value="${r.route_id}">${r.name} (${r.estimated_duration_minutes} min)</option>`
+        );
+    });
+}
+
+function applyQuickRoute() {
+    const sel = document.getElementById('j-quick-route');
+    const routeId = sel.value;
+    if (!routeId) return;
+
+    const route = predefinedRoutes.find(r => r.route_id === routeId);
+    if (!route) return;
+
+    // Auto-fill origin and destination inputs
+    document.getElementById('j-origin').value = route.origin_name;
+    document.getElementById('j-dest').value = route.destination_name;
+    document.getElementById('j-dur').value = route.estimated_duration_minutes;
+
+    // Store as selected locations (used by bookJourney)
+    selectedOrigin = {
+        name: route.origin_name,
+        lat: route.origin_lat,
+        lng: route.origin_lng,
+    };
+    selectedDest = {
+        name: route.destination_name,
+        lat: route.destination_lat,
+        lng: route.destination_lng,
+    };
+
+    // Highlight route on map
+    if (mapInstance && route.waypoints && route.waypoints.length >= 2) {
+        const latlngs = route.waypoints.map(w => [w.lat, w.lng]);
+        mapInstance.fitBounds(L.latLngBounds(latlngs), { padding: [40, 40] });
+    }
+}
+
+// =============================================
+// Node Health — Archive ALIVE/SUSPECT/DEAD model
+// =============================================
+
+async function loadNodeHealth() {
+    try {
+        const r = await authFetch('/health/nodes');
+        if (!r.ok) return;
+        const data = await r.json();
+
+        // Badge
+        const badge = document.getElementById('local-only-badge');
+        if (badge) badge.style.display = data.local_only_mode ? 'inline-block' : 'none';
+
+        // Render into both dash and simulate views
+        ['node-health-grid', 'sim-node-health-grid'].forEach(id => {
+            const grid = document.getElementById(id);
+            if (!grid) return;
+            const peers = data.peers || {};
+            grid.innerHTML = Object.entries(peers).map(([name, info]) => {
+                const colors = {ALIVE: '#06d6a0', SUSPECT: '#ffbe0b', DEAD: '#e63946'};
+                const bg = colors[info.status] || '#888';
+                return `<div style="background:var(--card-bg);border:2px solid ${bg};border-radius:8px;padding:10px;text-align:center">
+                    <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">${name}</div>
+                    <div style="font-weight:700;color:${bg};font-size:14px">${info.status}</div>
+                    <div style="font-size:10px;color:var(--text-muted);margin-top:2px">${info.consecutive_failures} fails</div>
+                </div>`;
+            }).join('');
+        });
+    } catch(err) {
+        console.warn('Node health fetch failed:', err);
+    }
+}
+
+// =============================================
+// Simulation panel — browser-side demos
+// =============================================
+
+async function loadSimStats() {
+    try {
+        const r = await authFetch('/health/nodes');
+        if (!r.ok) return;
+        const data = r.ok ? await r.json() : {};
+        const peers = Object.values(data.peers || {});
+        document.getElementById('sim-alive').innerText = peers.filter(p => p.status === 'ALIVE').length;
+        document.getElementById('sim-suspect').innerText = peers.filter(p => p.status === 'SUSPECT').length;
+        document.getElementById('sim-dead').innerText = peers.filter(p => p.status === 'DEAD').length;
+        document.getElementById('sim-mode').innerText = data.local_only_mode ? '🔴 LOCAL' : '🟢 GLOBAL';
+    } catch(e) { console.warn(e); }
+}
+
+function simLog(msg, type = 'info') {
+    const el = document.getElementById('sim-log');
+    if (!el) return;
+    const now = new Date().toLocaleTimeString();
+    const colors = {info:'#aaa', success:'#06d6a0', error:'#e63946', warn:'#ffbe0b'};
+    el.innerHTML += `<span style="color:${colors[type]||'#aaa'}">[${now}] ${msg}\n</span>`;
+    el.scrollTop = el.scrollHeight;
+}
+
+async function simDemo(type) {
+    simLog(`Starting demo: ${type}`, 'info');
+
+    if (type === 'consistency') {
+        // Two concurrent bookings for same route/time
+        simLog('Firing two concurrent bookings for same route and departure time…', 'warn');
+        const route = predefinedRoutes[0];
+        if (!route) { simLog('No routes loaded', 'error'); return; }
+        const dep = new Date(Date.now() + 90*60*1000).toISOString();
+        const payload = {
+            origin: route.origin_name, destination: route.destination_name,
+            origin_lat: route.origin_lat, origin_lng: route.origin_lng,
+            destination_lat: route.destination_lat, destination_lng: route.destination_lng,
+            departure_time: dep, estimated_duration_minutes: route.estimated_duration_minutes,
+            vehicle_registration: 'SIM-A001', vehicle_type: 'CAR',
+        };
+        const [r1, r2] = await Promise.all([
+            authFetch('/api/journeys/', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({...payload, vehicle_registration:'SIM-A001'})}),
+            authFetch('/api/journeys/', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({...payload, vehicle_registration:'SIM-A002'})}),
+        ]);
+        const d1 = await r1.json();
+        const d2 = await r2.json();
+        simLog(`  DRIVER-A: ${d1.status} ${d1.rejection_reason||''}`, d1.status==='CONFIRMED'?'success':'warn');
+        simLog(`  DRIVER-B: ${d2.status} ${d2.rejection_reason||''}`, d2.status==='CONFIRMED'?'success':'warn');
+        const wins = [d1,d2].filter(d => d.status==='CONFIRMED').length;
+        simLog(wins <= 1 ? '✅ Conflict detection working' : '⚠ Multiple writes accepted!', wins<=1?'success':'error');
+
+    } else if (type === '2pc') {
+        simLog('Booking with 2PC TCC coordinator (mode=2pc)…', 'info');
+        const route = predefinedRoutes[1] || predefinedRoutes[0];
+        if (!route) { simLog('No routes loaded', 'error'); return; }
+        const dep = new Date(Date.now() + 120*60*1000).toISOString();
+        const r = await authFetch('/api/journeys/?mode=2pc', {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({
+                origin: route.origin_name, destination: route.destination_name,
+                origin_lat: route.origin_lat, origin_lng: route.origin_lng,
+                destination_lat: route.destination_lat, destination_lng: route.destination_lng,
+                departure_time: dep, estimated_duration_minutes: route.estimated_duration_minutes,
+                vehicle_registration: 'TPC-DEMO01', vehicle_type: 'CAR',
+            })
+        });
+        const d = await r.json();
+        simLog(`  Status: ${d.status}  id=${d.id||'?'}`, d.status==='CONFIRMED'?'success':'warn');
+        if (d.rejection_reason) simLog(`  Reason: ${d.rejection_reason}`, 'warn');
+        simLog(d.status==='CONFIRMED'
+            ? '✅ 2PC COMMITTED — capacity reserved + journey confirmed atomically'
+            : '⚠ 2PC ABORTED — compensating CANCEL issued to conflict-service',
+            d.status==='CONFIRMED'?'success':'warn');
+
+    } else if (type === 'storm') {
+        simLog('Firing 10 concurrent bookings (storm test)…', 'warn');
+        const reqs = Array.from({length:10}, (_, i) => {
+            const route = predefinedRoutes[i % predefinedRoutes.length] || predefinedRoutes[0];
+            const dep = new Date(Date.now() + (30 + i*15)*60*1000).toISOString();
+            return authFetch('/api/journeys/', {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({
+                    origin: route.origin_name, destination: route.destination_name,
+                    origin_lat: route.origin_lat, origin_lng: route.origin_lng,
+                    destination_lat: route.destination_lat, destination_lng: route.destination_lng,
+                    departure_time: dep, estimated_duration_minutes: route.estimated_duration_minutes,
+                    vehicle_registration: `STRM-${String(i).padStart(3,'0')}`, vehicle_type: 'CAR',
+                })
+            });
+        });
+        const results = await Promise.all(reqs.map(p => p.then(r => r.json()).catch(e => ({status:'ERROR',rejection_reason:String(e)}))));
+        const ok = results.filter(d => d.status === 'CONFIRMED').length;
+        results.forEach((d,i) => simLog(`  [${i}] ${d.status} ${d.rejection_reason||''}`.slice(0,80), d.status==='CONFIRMED'?'success':'warn'));
+        simLog(`Storm done: ${ok}/10 confirmed`, ok>0?'success':'warn');
+
+    } else if (type === 'outbox') {
+        simLog('Forcing outbox drain to RabbitMQ…', 'info');
+        try {
+            const r = await authFetch('/admin/recovery/drain-outbox', {method:'POST'});
+            const d = await r.json();
+            simLog(`  Drained ${d.events_drained||0} event(s)`, 'success');
+        } catch(e) { simLog(`  Error: ${e}`, 'error'); }
+    }
+
+    await loadSimStats();
+    await loadNodeHealth();
+}
+
+async function simDrainOutbox() {
+    simLog('Force-draining outbox…', 'info');
+    try {
+        const r = await authFetch('/admin/recovery/drain-outbox', {method:'POST'});
+        const d = await r.json();
+        simLog(`Drained ${d.events_drained||0} event(s) to RabbitMQ`, 'success');
+        showToast(`Drained ${d.events_drained||0} outbox events`, 'success');
+    } catch(e) { simLog(`Error: ${e}`, 'error'); }
+}
+
+async function simRebuildCache() {
+    simLog('Rebuilding enforcement Redis cache…', 'info');
+    try {
+        const r = await authFetch('/admin/recovery/rebuild-enforcement-cache', {method:'POST'});
+        const d = await r.json();
+        simLog(`Cached ${d.journeys_cached||0} active journeys`, 'success');
+        showToast(`Cached ${d.journeys_cached||0} journeys`, 'success');
+    } catch(e) { simLog(`Error: ${e}`, 'error'); }
+}
+
+// =============================================
 // Toast notification system
+// =============================================
 let toastCounter = 0;
 function showToast(message, type = "info") {
     toastCounter++;

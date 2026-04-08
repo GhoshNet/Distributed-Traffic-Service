@@ -35,6 +35,9 @@ func main() {
 
 	r.Get("/health", healthHandler)
 	r.Get("/api/routes", listRoutesHandler)
+	// Also expose under /api/conflicts/ prefix so the nginx gateway can forward it
+	// without a separate upstream location block.
+	r.Get("/api/conflicts/routes", listRoutesHandler)
 	r.Post("/api/conflicts/check", checkConflictsHandler)
 	r.Post("/api/conflicts/cancel/{journey_id}", cancelBookingSlotHandler)
 

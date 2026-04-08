@@ -320,20 +320,25 @@ func checkRoadCapacity(ctx context.Context, tx pgx.Tx, req ConflictCheckRequest,
 	for i, cell := range cells {
 		t := cellTime(req.DepartureTime.Time, arrivalTime, i, len(cells))
 
-		var count int
+		// Use EXISTS + FOR UPDATE on a subquery — COUNT(*) cannot be combined with
+		// FOR UPDATE in PostgreSQL (error 0A000).  We lock the matching row (if any)
+		// and then check whether it was found.
+		var id string
 		err := tx.QueryRow(ctx, `
-			SELECT COUNT(*) FROM road_segment_capacity
+			SELECT id FROM road_segment_capacity
 			WHERE grid_lat = $1
 			  AND grid_lng = $2
 			  AND time_slot_start <= $3
 			  AND time_slot_end > $3
 			  AND current_bookings >= max_capacity
+			LIMIT 1
 			FOR UPDATE
-		`, cell.lat, cell.lng, t).Scan(&count)
-		if err != nil {
+		`, cell.lat, cell.lng, t).Scan(&id)
+		if err != nil && !isNoRows(err) {
 			return "", err
 		}
-		if count > 0 {
+		if err == nil {
+			// A row was found — the segment is at capacity
 			return fmt.Sprintf(
 				"Road segment (%.2f, %.2f) is fully booked at %s — segment %d of %d along route",
 				cell.lat, cell.lng, t.Format("15:04 UTC"), i+1, len(cells),

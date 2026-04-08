@@ -20,6 +20,9 @@ services:
     profiles: [full]
   rabbitmq-3:
     profiles: [full]
+  api-gateway-1:
+    ports:
+      - "8080:80"   # expose nginx directly on 8080 when HAProxy is not running (slim mode)
   api-gateway-2:
     profiles: [full]
   haproxy:

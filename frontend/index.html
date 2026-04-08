@@ -67,6 +67,7 @@
       <button class="nav-btn active" id="nav-map" onclick="go('map')" title="Live Map">🗺️</button>
       <button class="nav-btn" id="nav-dash" onclick="go('dash')" title="Dashboard">📊</button>
       <button class="nav-btn" id="nav-journeys" onclick="go('journeys')" title="Journeys">🛣️</button>
+      <button class="nav-btn" id="nav-simulate" onclick="go('simulate')" title="Simulate">⚡</button>
       <div class="sidebar-spacer"></div>
       <button class="nav-btn" onclick="logout()" title="Logout">🚪</button>
     </nav>
@@ -88,6 +89,13 @@
         <div class="g-map">
           <div class="card" style="padding:4px">
             <div id="map"></div>
+          </div>
+          <div class="card" style="margin-top:12px">
+            <div class="card-title" style="display:flex;align-items:center;gap:10px;">
+              Road Network
+              <button class="btn btn-sm btn-primary" onclick="toggleRoadNetwork()">Toggle Routes</button>
+            </div>
+            <div id="route-legend" class="item-list" style="max-height:160px;overflow-y:auto;"></div>
           </div>
         </div>
       </div>
@@ -112,6 +120,17 @@
             <div class="stat-value" id="stat-rej" style="color:var(--danger)">0</div>
           </div>
         </div>
+
+        <!-- Node Health Panel (Archive ALIVE/SUSPECT/DEAD) -->
+        <div class="card" style="margin-top:20px">
+          <div class="card-title" style="display:flex;align-items:center;gap:10px;">
+            Node Health
+            <span id="local-only-badge" style="display:none;background:var(--danger);color:#fff;font-size:11px;padding:2px 8px;border-radius:4px;">LOCAL ONLY</span>
+            <button class="btn btn-sm btn-primary" onclick="loadNodeHealth()" style="margin-left:auto">Refresh</button>
+          </div>
+          <div id="node-health-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-top:8px;"></div>
+        </div>
+
         <div class="card" style="margin-top:20px">
           <div class="card-title">Points History</div>
           <div id="points-history" class="item-list"></div>
@@ -124,6 +143,13 @@
           <div class="card">
             <div class="card-title">Book New Journey</div>
             <form onsubmit="bookJourney(event)">
+              <!-- Quick Route selector (from predefined Irish routes) -->
+              <div class="form-group">
+                <label class="form-label">Quick Route</label>
+                <select class="form-input" id="j-quick-route" onchange="applyQuickRoute()">
+                  <option value="">— or use free-form search below —</option>
+                </select>
+              </div>
               <div class="form-group">
                 <label class="form-label">Origin</label>
                 <div class="autocomplete-wrapper">
@@ -150,6 +176,14 @@
                 <label class="form-label">Vehicle</label>
                 <select class="form-input" id="j-vehicle" required>
                   <option value="">Select a registered vehicle...</option>
+                </select>
+              </div>
+              <!-- Booking Protocol selector -->
+              <div class="form-group">
+                <label class="form-label">Booking Protocol</label>
+                <select class="form-input" id="j-protocol">
+                  <option value="saga">Saga (default — eventual consistency)</option>
+                  <option value="2pc">2PC / TCC (stronger consistency)</option>
                 </select>
               </div>
               <button class="btn btn-primary btn-full" type="submit">Submit Request</button>
@@ -180,6 +214,65 @@
             <div class="card-title">My Journey Logs</div>
             <div id="journey-list" class="item-list"></div>
           </div>
+        </div>
+      </div>
+
+      <!-- SIMULATE VIEW (Archive distributed-problems panel) -->
+      <div id="view-simulate" class="view">
+        <div class="g4" style="margin-bottom:16px">
+          <div class="card">
+            <div class="stat-label">Active Peers</div>
+            <div class="stat-value" id="sim-alive" style="color:var(--success)">—</div>
+          </div>
+          <div class="card">
+            <div class="stat-label">Suspect Peers</div>
+            <div class="stat-value" id="sim-suspect" style="color:var(--warning)">—</div>
+          </div>
+          <div class="card">
+            <div class="stat-label">Dead Peers</div>
+            <div class="stat-value" id="sim-dead" style="color:var(--danger)">—</div>
+          </div>
+          <div class="card">
+            <div class="stat-label">Mode</div>
+            <div class="stat-value" id="sim-mode" style="font-size:16px">—</div>
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+          <div class="card">
+            <div class="card-title">Distributed Problems</div>
+            <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+              <button class="btn btn-primary btn-full" onclick="simDemo('consistency')">🔀 Data Consistency Conflict</button>
+              <button class="btn btn-primary btn-full" onclick="simDemo('storm')">🌪️ Concurrent Booking Storm</button>
+              <button class="btn btn-primary btn-full" onclick="simDemo('2pc')">🔄 Two-Phase Commit Demo</button>
+              <button class="btn btn-primary btn-full" onclick="simDemo('outbox')">📦 Transactional Outbox</button>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">Node Control</div>
+            <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+              <button class="btn btn-primary btn-full" onclick="loadNodeHealth(); loadSimStats()">🔄 Refresh Health</button>
+              <button class="btn btn-primary btn-full" onclick="simDrainOutbox()">🚀 Force Drain Outbox</button>
+              <button class="btn btn-primary btn-full" onclick="simRebuildCache()">♻️ Rebuild Enforcement Cache</button>
+            </div>
+            <div style="margin-top:12px;font-size:12px;color:var(--text-muted);line-height:1.6">
+              <div>Stop a service: <code>docker stop &lt;name&gt;</code></div>
+              <div>After 3 pings (~30s): SUSPECT</div>
+              <div>After 6 pings (~60s): DEAD</div>
+              <div>Restart to recover: ALIVE</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:16px">
+          <div class="card-title">Simulation Log</div>
+          <div id="sim-log" style="font-family:monospace;font-size:12px;background:var(--bg);padding:12px;border-radius:6px;max-height:300px;overflow-y:auto;white-space:pre-wrap;color:var(--text-muted)">Waiting for simulation events…</div>
+        </div>
+
+        <!-- Node health detail (reused from dash) -->
+        <div class="card" style="margin-top:16px">
+          <div class="card-title">Peer Node Health</div>
+          <div id="sim-node-health-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-top:8px;"></div>
         </div>
       </div>
 
