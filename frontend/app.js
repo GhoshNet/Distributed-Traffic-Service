@@ -1,5 +1,5 @@
-const API = 'http://localhost:8080';
-const WS = 'ws://localhost:8080';
+const API = `http://${location.hostname}:8080`;
+const WS = `ws://${location.hostname}:8080`;
 
 let token = localStorage.getItem('jb_token');
 let user = JSON.parse(localStorage.getItem('jb_user') || 'null');
@@ -8,14 +8,15 @@ let mapInstance = null;
 let markers = {};
 let layerGroup = null;
 
-// Geocoding state — stores the selected location objects
+// City selection state
 let selectedOrigin = null;
 let selectedDest = null;
-let geocodeTimers = {};
 
-// Routing logic
-if (token && user) enterApp();
-else document.getElementById('auth-screen').style.display = 'flex';
+// Routing logic — deferred until full script is parsed
+window.addEventListener('DOMContentLoaded', () => {
+  if (token && user) enterApp();
+  else document.getElementById('auth-screen').style.display = 'flex';
+});
 
 function switchAuth(tab) {
   document.getElementById('login-form').style.display = tab === 'login' ? 'block' : 'none';
@@ -84,7 +85,7 @@ function enterApp() {
   initMap();
   go('map');
   connectWS();
-  setupAutocomplete();
+  populateCityDropdowns();
   loadVehicles();
   // Set default departure time
   let d = new Date(); d.setHours(d.getHours()+1);
@@ -164,88 +165,87 @@ async function authFetch(url, opts={}) {
 }
 
 // =============================================
-// BUG FIX 3: Geocoding autocomplete (replaces hardcoded cities)
-// Uses OpenStreetMap Nominatim for free worldwide geocoding
+// Hardcoded cities with exact coordinates matching conflict-service routes
 // =============================================
-function setupAutocomplete() {
-    setupGeoInput('j-origin', 'j-origin-results', (place) => {
-        selectedOrigin = place;
+const CITIES = {
+  // Republic of Ireland
+  "Dublin":     { lat: 53.3498, lng: -6.2603,  country: "IE" },
+  "Galway":     { lat: 53.2707, lng: -9.0568,  country: "IE" },
+  "Cork":       { lat: 51.8985, lng: -8.4756,  country: "IE" },
+  "Limerick":   { lat: 52.6638, lng: -8.6267,  country: "IE" },
+  "Waterford":  { lat: 52.2593, lng: -7.1101,  country: "IE" },
+  "Kilkenny":   { lat: 52.6541, lng: -7.2448,  country: "IE" },
+  "Athlone":    { lat: 53.4239, lng: -7.9407,  country: "IE" },
+  "Drogheda":   { lat: 53.7179, lng: -6.3569,  country: "IE" },
+  "Dundalk":    { lat: 54.0011, lng: -6.4011,  country: "IE" },
+  "Portlaoise": { lat: 53.0319, lng: -7.2990,  country: "IE" },
+  // Northern Ireland
+  "Belfast":    { lat: 54.5973, lng: -5.9301,  country: "NI" },
+  "Newry":      { lat: 54.1751, lng: -6.3394,  country: "NI" },
+  "Derry":      { lat: 54.9966, lng: -7.3086,  country: "NI" },
+  "Lisburn":    { lat: 54.5162, lng: -6.0580,  country: "NI" },
+  "Bangor":     { lat: 54.6533, lng: -5.6700,  country: "NI" },
+};
+
+// Known routes (must match conflict-service seed data)
+const ROUTE_MAP = {
+  "Dublin|Galway":   { route_id: "dublin-galway",   duration: 135 },
+  "Dublin|Cork":     { route_id: "dublin-cork",      duration: 150 },
+  "Dublin|Belfast":  { route_id: "dublin-belfast",   duration: 120 },
+  "Dublin|Limerick": { route_id: "dublin-limerick",  duration: 120 },
+  "Galway|Limerick": { route_id: "galway-limerick",  duration: 60 },
+  "Limerick|Cork":   { route_id: "limerick-cork",    duration: 75 },
+};
+
+function populateCityDropdowns() {
+  const originSel = document.getElementById('j-origin');
+  const destSel = document.getElementById('j-dest');
+  const names = Object.keys(CITIES);
+
+  [originSel, destSel].forEach(sel => {
+    sel.innerHTML = '<option value="">Select city...</option>';
+    names.forEach(name => {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = `${name} (${CITIES[name].country})`;
+      sel.appendChild(opt);
     });
-    setupGeoInput('j-dest', 'j-dest-results', (place) => {
-        selectedDest = place;
-    });
+  });
+
+  originSel.addEventListener('change', onCityChange);
+  destSel.addEventListener('change', onCityChange);
 }
 
-function setupGeoInput(inputId, resultsId, onSelect) {
-    const input = document.getElementById(inputId);
-    const results = document.getElementById(resultsId);
+function onCityChange() {
+  const origin = document.getElementById('j-origin').value;
+  const dest = document.getElementById('j-dest').value;
 
-    input.addEventListener('input', () => {
-        const query = input.value.trim();
-        if (query.length < 3) { results.innerHTML = ''; results.style.display = 'none'; return; }
+  if(origin) selectedOrigin = { name: origin, ...CITIES[origin] };
+  if(dest) selectedDest = { name: dest, ...CITIES[dest] };
 
-        // Debounce: wait 350ms after last keystroke
-        clearTimeout(geocodeTimers[inputId]);
-        geocodeTimers[inputId] = setTimeout(() => geocodeSearch(query, results, input, onSelect), 350);
-    });
-
-    input.addEventListener('blur', () => {
-        // Delay hide so click events on results fire first
-        setTimeout(() => { results.style.display = 'none'; }, 200);
-    });
-
-    input.addEventListener('focus', () => {
-        if (results.innerHTML) results.style.display = 'block';
-    });
-}
-
-async function geocodeSearch(query, resultsEl, inputEl, onSelect) {
-    try {
-        const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=6&addressdetails=1`;
-        const r = await fetch(url, { headers: { 'Accept-Language': 'en' } });
-        const places = await r.json();
-
-        if (places.length === 0) {
-            resultsEl.innerHTML = '<div class="autocomplete-item no-results">No results found</div>';
-            resultsEl.style.display = 'block';
-            return;
-        }
-
-        resultsEl.innerHTML = places.map((p, i) => `
-            <div class="autocomplete-item" data-idx="${i}">
-                <div class="ac-name">${p.display_name.split(',').slice(0,3).join(', ')}</div>
-                <div class="ac-detail">${p.display_name}</div>
-            </div>
-        `).join('');
-        resultsEl.style.display = 'block';
-
-        // Attach click handlers
-        resultsEl.querySelectorAll('.autocomplete-item:not(.no-results)').forEach((el) => {
-            el.addEventListener('mousedown', (e) => {
-                e.preventDefault();
-                const idx = parseInt(el.dataset.idx);
-                const place = places[idx];
-                inputEl.value = place.display_name.split(',').slice(0,3).join(', ');
-                onSelect({
-                    name: place.display_name.split(',').slice(0,3).join(', '),
-                    full_name: place.display_name,
-                    lat: parseFloat(place.lat),
-                    lng: parseFloat(place.lon),
-                });
-                resultsEl.style.display = 'none';
-            });
-        });
-    } catch(err) {
-        console.error('Geocoding error:', err);
-        resultsEl.innerHTML = '<div class="autocomplete-item no-results">Search failed</div>';
-        resultsEl.style.display = 'block';
+  // Auto-fill duration from known routes (check both directions)
+  if(origin && dest) {
+    const key = `${origin}|${dest}`;
+    const reverseKey = `${dest}|${origin}`;
+    const match = ROUTE_MAP[key] || ROUTE_MAP[reverseKey];
+    if(match) {
+      document.getElementById('j-dur').value = match.duration;
     }
+  }
+}
+
+function getRouteId(origin, dest) {
+  const key = `${origin}|${dest}`;
+  const reverseKey = `${dest}|${origin}`;
+  const match = ROUTE_MAP[key] || ROUTE_MAP[reverseKey];
+  return match ? match.route_id : null;
 }
 
 async function bookJourney(e) {
     e.preventDefault();
-    if(!selectedOrigin) return showToast("Please search and select an origin location", "error");
-    if(!selectedDest) return showToast("Please search and select a destination location", "error");
+    if(!selectedOrigin) return showToast("Please select an origin city", "error");
+    if(!selectedDest) return showToast("Please select a destination city", "error");
+    if(selectedOrigin.name === selectedDest.name) return showToast("Origin and destination must be different", "error");
 
     const vehicleSelect = document.getElementById('j-vehicle');
     const selectedVehicle = vehicleSelect.value;
@@ -254,15 +254,17 @@ async function bookJourney(e) {
     // Parse "REGISTRATION|TYPE" from the select value
     const [plate, vtype] = selectedVehicle.split('|');
 
+    const routeId = getRouteId(selectedOrigin.name, selectedDest.name);
     const payload = {
         origin: selectedOrigin.name, destination: selectedDest.name,
         origin_lat: selectedOrigin.lat, origin_lng: selectedOrigin.lng,
         destination_lat: selectedDest.lat, destination_lng: selectedDest.lng,
-        departure_time: new Date(document.getElementById('j-depart').value).toISOString(),
+        departure_time: document.getElementById('j-depart').value + ':00',
         estimated_duration_minutes: parseInt(document.getElementById('j-dur').value),
         vehicle_registration: plate,
         vehicle_type: vtype
     };
+    if(routeId) payload.route_id = routeId;
 
     try {
         const r = await authFetch('/api/journeys/', {

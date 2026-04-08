@@ -125,18 +125,16 @@
             <div class="card-title">Book New Journey</div>
             <form onsubmit="bookJourney(event)">
               <div class="form-group">
-                <label class="form-label">Origin</label>
-                <div class="autocomplete-wrapper">
-                  <input class="form-input" type="text" id="j-origin" placeholder="Search for a location..." autocomplete="off" required>
-                  <div class="autocomplete-results" id="j-origin-results"></div>
-                </div>
+                <label class="form-label">Origin City</label>
+                <select class="form-input" id="j-origin" required>
+                  <option value="">Select origin...</option>
+                </select>
               </div>
               <div class="form-group">
-                <label class="form-label">Destination</label>
-                <div class="autocomplete-wrapper">
-                  <input class="form-input" type="text" id="j-dest" placeholder="Search for a location..." autocomplete="off" required>
-                  <div class="autocomplete-results" id="j-dest-results"></div>
-                </div>
+                <label class="form-label">Destination City</label>
+                <select class="form-input" id="j-dest" required>
+                  <option value="">Select destination...</option>
+                </select>
               </div>
               <div class="form-group">
                 <label class="form-label">Departure</label>

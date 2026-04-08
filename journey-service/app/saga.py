@@ -70,7 +70,7 @@ class BookingSaga:
                 conflict_result = await BookingSaga._check_conflicts(journey)
 
                 if conflict_result is None:
-                    return JourneyStatus.REJECTED, "Conflict check service unavailable. Please retry."
+                    return JourneyStatus.REJECTED, "Could not reach the conflict-check service. Please try again in a moment."
 
                 if conflict_result.is_conflict:
                     reason = conflict_result.conflict_details or f"Conflict: {conflict_result.conflict_type}"
@@ -89,13 +89,13 @@ class BookingSaga:
 
         except CircuitBreakerOpenError as e:
             logger.warning(f"Saga aborted: {e}")
-            return JourneyStatus.REJECTED, "Conflict check service temporarily unavailable. Please retry later."
+            return JourneyStatus.REJECTED, "The booking system is experiencing high load. Please retry in a few seconds."
         except asyncio.TimeoutError:
             logger.error(f"Saga timeout for journey {journey.id}")
-            return JourneyStatus.REJECTED, "Booking timed out. Please retry."
+            return JourneyStatus.REJECTED, "Booking timed out waiting for a response. Please try again."
         except Exception as e:
             logger.error(f"Saga error for journey {journey.id}: {e}", exc_info=True)
-            return JourneyStatus.REJECTED, f"Internal error during booking. Please retry."
+            return JourneyStatus.REJECTED, "An unexpected error occurred while processing your booking. Please try again."
 
     @staticmethod
     async def _execute_multi_region(
@@ -126,7 +126,8 @@ class BookingSaga:
                 for held_region_id, (hold_id, held_url) in holds.items():
                     await BookingSaga._rollback_hold(hold_id, held_url)
                     logger.info("Rolled back hold %s on region %s", hold_id, held_region_id)
-                return JourneyStatus.REJECTED, f"Region {region_id} unavailable — cross-border booking failed"
+                region_label = "Northern Ireland" if region_id == "NI" else "Republic of Ireland" if region_id == "IE" else region_id
+                return JourneyStatus.REJECTED, f"Cannot complete cross-border booking: the {region_label} region is currently unavailable. IE-only routes still work."
 
             if hold_result.get("is_conflict"):
                 # Conflict detected on this region
@@ -138,7 +139,7 @@ class BookingSaga:
                 for held_region_id, (hold_id, held_url) in holds.items():
                     await BookingSaga._rollback_hold(hold_id, held_url)
                     logger.info("Rolled back hold %s on region %s", hold_id, held_region_id)
-                conflict_details = hold_result.get("conflict_details") or "Cross-region conflict detected"
+                conflict_details = hold_result.get("conflict_details") or "This route is already booked by another vehicle at the requested time."
                 return JourneyStatus.REJECTED, conflict_details
 
             hold_id = hold_result.get("hold_id")
@@ -146,7 +147,8 @@ class BookingSaga:
                 logger.error("Region %s returned hold response without hold_id", region_id)
                 for held_region_id, (hid, held_url) in holds.items():
                     await BookingSaga._rollback_hold(hid, held_url)
-                return JourneyStatus.REJECTED, f"Unexpected response from region {region_id}"
+                region_label = "Northern Ireland" if region_id == "NI" else "Republic of Ireland" if region_id == "IE" else region_id
+                return JourneyStatus.REJECTED, f"Received an invalid response from the {region_label} region. Please retry."
 
             holds[region_id] = (hold_id, region_url)
             logger.info("Phase-1 hold acquired: region=%s hold_id=%s", region_id, hold_id)

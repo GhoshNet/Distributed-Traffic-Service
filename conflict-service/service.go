@@ -78,9 +78,9 @@ func checkConflicts(ctx context.Context, req ConflictCheckRequest) (ConflictChec
 	} else if conflict != nil {
 		ct := "TIME_OVERLAP"
 		details := fmt.Sprintf(
-			"Driver already has a journey booked from %s to %s",
-			conflict.departureTime.Format(time.RFC3339),
-			conflict.arrivalTime.Format(time.RFC3339),
+			"You already have a booking during this time window (%s to %s). Cancel it first or choose a different departure time.",
+			conflict.departureTime.Format("15:04 02-Jan"),
+			conflict.arrivalTime.Format("15:04 02-Jan"),
 		)
 		return ConflictCheckResponse{
 			JourneyID:       req.JourneyID,
@@ -97,10 +97,10 @@ func checkConflicts(ctx context.Context, req ConflictCheckRequest) (ConflictChec
 	} else if conflict != nil {
 		ct := "TIME_OVERLAP"
 		details := fmt.Sprintf(
-			"Vehicle %s already has a journey booked from %s to %s",
+			"Vehicle %s is already booked for another journey from %s to %s. Use a different vehicle or departure time.",
 			req.VehicleRegistration,
-			conflict.departureTime.Format(time.RFC3339),
-			conflict.arrivalTime.Format(time.RFC3339),
+			conflict.departureTime.Format("15:04 02-Jan"),
+			conflict.arrivalTime.Format("15:04 02-Jan"),
 		)
 		return ConflictCheckResponse{
 			JourneyID:       req.JourneyID,
@@ -340,9 +340,13 @@ func checkRoadCapacity(ctx context.Context, tx pgx.Tx, req ConflictCheckRequest,
 		}
 		if count > 0 {
 			log.Printf("[capacity-check] CONFLICT at cell %d (%.4f,%.4f) t=%s count=%d", i, cell.lat, cell.lng, t.Format("15:04:05"), count)
+			routeLabel := req.RouteID
+			if routeLabel == "" {
+				routeLabel = "this route"
+			}
 			return fmt.Sprintf(
-				"Road segment (%.2f, %.2f) is fully booked at %s — segment %d of %d along route",
-				cell.lat, cell.lng, t.Format("15:04 UTC"), i+1, len(cells),
+				"Road at capacity: another vehicle is already booked on %s around %s. Try a different departure time.",
+				routeLabel, t.Format("15:04 02-Jan"),
 			), nil
 		}
 	}
@@ -435,9 +439,9 @@ func holdConflicts(ctx context.Context, req ConflictCheckRequest) (HoldConflictR
 	} else if conflict != nil {
 		ct := "TIME_OVERLAP"
 		details := fmt.Sprintf(
-			"Driver already has a journey booked from %s to %s",
-			conflict.departureTime.Format(time.RFC3339),
-			conflict.arrivalTime.Format(time.RFC3339),
+			"You already have a booking during this time window (%s to %s). Cancel it first or choose a different departure time.",
+			conflict.departureTime.Format("15:04 02-Jan"),
+			conflict.arrivalTime.Format("15:04 02-Jan"),
 		)
 		return HoldConflictResponse{
 			JourneyID:       req.JourneyID,
@@ -455,10 +459,10 @@ func holdConflicts(ctx context.Context, req ConflictCheckRequest) (HoldConflictR
 	} else if conflict != nil {
 		ct := "TIME_OVERLAP"
 		details := fmt.Sprintf(
-			"Vehicle %s already has a journey booked from %s to %s",
+			"Vehicle %s is already booked for another journey from %s to %s. Use a different vehicle or departure time.",
 			req.VehicleRegistration,
-			conflict.departureTime.Format(time.RFC3339),
-			conflict.arrivalTime.Format(time.RFC3339),
+			conflict.departureTime.Format("15:04 02-Jan"),
+			conflict.arrivalTime.Format("15:04 02-Jan"),
 		)
 		return HoldConflictResponse{
 			JourneyID:       req.JourneyID,
