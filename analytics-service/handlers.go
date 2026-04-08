@@ -68,6 +68,116 @@ func eventsHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func hourlyStatsHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	q := r.URL.Query()
+
+	limit := 24
+	if v := q.Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= 168 {
+			limit = n
+		}
+	}
+
+	rows, err := db.Query(ctx, `
+		SELECT hour, total_bookings, confirmed, rejected, cancelled
+		FROM hourly_stats
+		ORDER BY hour DESC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+
+	type hourRow struct {
+		Hour          string `json:"hour"`
+		TotalBookings int    `json:"total_bookings"`
+		Confirmed     int    `json:"confirmed"`
+		Rejected      int    `json:"rejected"`
+		Cancelled     int    `json:"cancelled"`
+	}
+
+	var out []hourRow
+	for rows.Next() {
+		var hr hourRow
+		var t time.Time
+		if err := rows.Scan(&t, &hr.TotalBookings, &hr.Confirmed, &hr.Rejected, &hr.Cancelled); err != nil {
+			continue
+		}
+		hr.Hour = t.UTC().Format(time.RFC3339)
+		out = append(out, hr)
+	}
+	if out == nil {
+		out = []hourRow{}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"hourly_stats": out,
+		"count":        len(out),
+	})
+}
+
+func replicaLagHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// Query pg_stat_replication on the primary to get replication lag
+	rows, err := db.Query(ctx, `
+		SELECT
+			application_name,
+			state,
+			COALESCE(write_lag::text, 'N/A')   AS write_lag,
+			COALESCE(flush_lag::text, 'N/A')   AS flush_lag,
+			COALESCE(replay_lag::text, 'N/A')  AS replay_lag,
+			CASE WHEN pg_is_in_recovery() THEN 'replica' ELSE 'primary' END AS role
+		FROM pg_stat_replication
+	`)
+	if err != nil {
+		// Fallback: at least report whether this is primary or replica
+		var inRecovery bool
+		_ = db.QueryRow(ctx, "SELECT pg_is_in_recovery()").Scan(&inRecovery)
+		role := "primary"
+		if inRecovery {
+			role = "replica"
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"role":           role,
+			"replicas":       []any{},
+			"note":           "pg_stat_replication query failed (may be a replica node)",
+		})
+		return
+	}
+	defer rows.Close()
+
+	type replicaRow struct {
+		Name      string `json:"application_name"`
+		State     string `json:"state"`
+		WriteLag  string `json:"write_lag"`
+		FlushLag  string `json:"flush_lag"`
+		ReplayLag string `json:"replay_lag"`
+		Role      string `json:"role"`
+	}
+
+	var replicas []replicaRow
+	for rows.Next() {
+		var r replicaRow
+		if err := rows.Scan(&r.Name, &r.State, &r.WriteLag, &r.FlushLag, &r.ReplayLag, &r.Role); err != nil {
+			continue
+		}
+		replicas = append(replicas, r)
+	}
+	if replicas == nil {
+		replicas = []replicaRow{}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"role":     "primary",
+		"replicas": replicas,
+		"count":    len(replicas),
+	})
+}
+
 func serviceHealthHandler(w http.ResponseWriter, r *http.Request) {
 	base := os.Getenv("SERVICES_BASE_URL")
 

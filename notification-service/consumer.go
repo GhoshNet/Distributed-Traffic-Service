@@ -1,6 +1,9 @@
 package main
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -130,6 +133,37 @@ func strField(m map[string]interface{}, key, def string) string {
 		return v
 	}
 	return def
+}
+
+func notifDedupeKey(msg amqp.Delivery) string {
+	if msg.MessageId != "" {
+		return "notif:processed:" + msg.MessageId
+	}
+	h := sha256.Sum256(msg.Body)
+	return "notif:processed:" + hex.EncodeToString(h[:])
+}
+
+func notifIsDuplicate(msg amqp.Delivery) bool {
+	if rdb == nil {
+		return false
+	}
+	key := notifDedupeKey(msg)
+	exists, err := rdb.Exists(context.Background(), key).Result()
+	if err != nil {
+		log.Printf("Redis dedup check error: %v", err)
+		return false
+	}
+	return exists > 0
+}
+
+func notifMarkProcessed(msg amqp.Delivery) {
+	if rdb == nil {
+		return
+	}
+	key := notifDedupeKey(msg)
+	if err := rdb.Set(context.Background(), key, 1, 24*time.Hour).Err(); err != nil {
+		log.Printf("Redis dedup mark error: %v", err)
+	}
 }
 
 func handleEvent(body []byte, routingKey string) error {
@@ -262,10 +296,16 @@ func setupChannel(conn *amqp.Connection) error {
 	log.Println("Notification consumer started")
 	go func() {
 		for msg := range msgs {
+			if notifIsDuplicate(msg) {
+				log.Printf("Skipping duplicate notification event (msgID=%s)", msg.MessageId)
+				msg.Ack(false)
+				continue
+			}
 			if err := handleEvent(msg.Body, msg.RoutingKey); err != nil {
 				log.Printf("Error processing message: %v", err)
 				msg.Nack(false, false) // route to DLQ
 			} else {
+				notifMarkProcessed(msg)
 				msg.Ack(false)
 			}
 		}

@@ -183,11 +183,11 @@ services:
       - sh
       - -c
       - |
-        until REDIS_IP=$(getent hosts redis | awk '{print $1; exit}') && [ -n "$REDIS_IP" ]; do
+        until REDIS_IP=$$(getent hosts redis | awk '{print $$1; exit}') && [ -n "$$REDIS_IP" ]; do
           echo "Waiting for redis DNS..."
           sleep 2
         done
-        echo "sentinel monitor mymaster $REDIS_IP 6379 2" > /tmp/sentinel.conf
+        echo "sentinel monitor mymaster $$REDIS_IP 6379 2" > /tmp/sentinel.conf
         echo "sentinel down-after-milliseconds mymaster 5000" >> /tmp/sentinel.conf
         echo "sentinel failover-timeout mymaster 10000" >> /tmp/sentinel.conf
         echo "sentinel parallel-syncs mymaster 1" >> /tmp/sentinel.conf
@@ -209,11 +209,11 @@ services:
       - sh
       - -c
       - |
-        until REDIS_IP=$(getent hosts redis | awk '{print $1; exit}') && [ -n "$REDIS_IP" ]; do
+        until REDIS_IP=$$(getent hosts redis | awk '{print $$1; exit}') && [ -n "$$REDIS_IP" ]; do
           echo "Waiting for redis DNS..."
           sleep 2
         done
-        echo "sentinel monitor mymaster $REDIS_IP 6379 2" > /tmp/sentinel.conf
+        echo "sentinel monitor mymaster $$REDIS_IP 6379 2" > /tmp/sentinel.conf
         echo "sentinel down-after-milliseconds mymaster 5000" >> /tmp/sentinel.conf
         echo "sentinel failover-timeout mymaster 10000" >> /tmp/sentinel.conf
         echo "sentinel parallel-syncs mymaster 1" >> /tmp/sentinel.conf
@@ -233,11 +233,11 @@ services:
       - sh
       - -c
       - |
-        until REDIS_IP=$(getent hosts redis | awk '{print $1; exit}') && [ -n "$REDIS_IP" ]; do
+        until REDIS_IP=$$(getent hosts redis | awk '{print $$1; exit}') && [ -n "$$REDIS_IP" ]; do
           echo "Waiting for redis DNS..."
           sleep 2
         done
-        echo "sentinel monitor mymaster $REDIS_IP 6379 2" > /tmp/sentinel.conf
+        echo "sentinel monitor mymaster $$REDIS_IP 6379 2" > /tmp/sentinel.conf
         echo "sentinel down-after-milliseconds mymaster 5000" >> /tmp/sentinel.conf
         echo "sentinel failover-timeout mymaster 10000" >> /tmp/sentinel.conf
         echo "sentinel parallel-syncs mymaster 1" >> /tmp/sentinel.conf
@@ -491,6 +491,8 @@ services:
       DATABASE_URL: postgresql+asyncpg://users_user:users_pass@postgres-users:5432/users_db
       DATABASE_READ_URL: postgresql+asyncpg://users_user:users_pass@postgres-users-replica:5432/users_db
       REDIS_URL: redis://redis:6379/0
+      REDIS_SENTINEL_ADDRS: redis-sentinel:26379,redis-sentinel-2:26379,redis-sentinel-3:26379
+      REDIS_MASTER_NAME: mymaster
       RABBITMQ_URL: amqp://journey_admin:journey_pass@rabbitmq:5672/journey_vhost
       JWT_SECRET: keefkfwjNBEFINoodwoedibIOEJFKWNFIjjjdIIIOOP
       SERVICE_NAME: user-service
@@ -521,6 +523,8 @@ services:
       DATABASE_URL: postgresql+asyncpg://journeys_user:journeys_pass@postgres-journeys:5432/journeys_db
       DATABASE_READ_URL: postgresql+asyncpg://journeys_user:journeys_pass@postgres-journeys-replica:5432/journeys_db
       REDIS_URL: redis://redis:6379/1
+      REDIS_SENTINEL_ADDRS: redis-sentinel:26379,redis-sentinel-2:26379,redis-sentinel-3:26379
+      REDIS_MASTER_NAME: mymaster
       RABBITMQ_URL: amqp://journey_admin:journey_pass@rabbitmq:5672/journey_vhost
       CONFLICT_SERVICE_URL: http://conflict-service:8000
       JWT_SECRET: keefkfwjNBEFINoodwoedibIOEJFKWNFIjjjdIIIOOP
@@ -551,6 +555,8 @@ services:
     environment:
       DATABASE_URL: postgresql://conflicts_user:conflicts_pass@postgres-conflicts:5432/conflicts_db
       REDIS_URL: redis://redis:6379/2
+      REDIS_SENTINEL_ADDRS: redis-sentinel:26379,redis-sentinel-2:26379,redis-sentinel-3:26379
+      REDIS_MASTER_NAME: mymaster
       RABBITMQ_URL: amqp://journey_admin:journey_pass@rabbitmq:5672/journey_vhost
       JWT_SECRET: keefkfwjNBEFINoodwoedibIOEJFKWNFIjjjdIIIOOP
       SERVICE_NAME: conflict-service
@@ -579,6 +585,8 @@ services:
       - "8004:8000"
     environment:
       REDIS_URL: redis://redis:6379/3
+      REDIS_SENTINEL_ADDRS: redis-sentinel:26379,redis-sentinel-2:26379,redis-sentinel-3:26379
+      REDIS_MASTER_NAME: mymaster
       RABBITMQ_URL: amqp://journey_admin:journey_pass@rabbitmq:5672/journey_vhost
       JWT_SECRET: keefkfwjNBEFINoodwoedibIOEJFKWNFIjjjdIIIOOP
       SERVICE_NAME: notification-service
@@ -605,6 +613,8 @@ services:
       - "8005:8000"
     environment:
       REDIS_URL: redis://redis:6379/4
+      REDIS_SENTINEL_ADDRS: redis-sentinel:26379,redis-sentinel-2:26379,redis-sentinel-3:26379
+      REDIS_MASTER_NAME: mymaster
       RABBITMQ_URL: amqp://journey_admin:journey_pass@rabbitmq:5672/journey_vhost
       JOURNEY_SERVICE_URL: http://journey-service:8000
       JWT_SECRET: keefkfwjNBEFINoodwoedibIOEJFKWNFIjjjdIIIOOP
@@ -634,6 +644,8 @@ services:
       DATABASE_URL: postgresql://analytics_user:analytics_pass@postgres-analytics:5432/analytics_db
       DATABASE_READ_URL: postgresql://analytics_user:analytics_pass@postgres-analytics-replica:5432/analytics_db
       REDIS_URL: redis://redis:6379/5
+      REDIS_SENTINEL_ADDRS: redis-sentinel:26379,redis-sentinel-2:26379,redis-sentinel-3:26379
+      REDIS_MASTER_NAME: mymaster
       RABBITMQ_URL: amqp://journey_admin:journey_pass@rabbitmq:5672/journey_vhost
       JWT_SECRET: keefkfwjNBEFINoodwoedibIOEJFKWNFIjjjdIIIOOP
       AUDIT_HMAC_SECRET: auditChain9X2mPlQ7vRz4KdW8sFnE3bY

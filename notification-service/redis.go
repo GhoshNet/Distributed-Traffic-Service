@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -13,11 +15,28 @@ import (
 var rdb *redis.Client
 
 func initRedis(redisURL string) error {
-	opts, err := redis.ParseURL(redisURL)
-	if err != nil {
-		return err
+	sentinelAddrs := os.Getenv("REDIS_SENTINEL_ADDRS")
+	masterName := os.Getenv("REDIS_MASTER_NAME")
+	if masterName == "" {
+		masterName = "mymaster"
 	}
-	rdb = redis.NewClient(opts)
+
+	if sentinelAddrs != "" {
+		addrs := strings.Split(sentinelAddrs, ",")
+		rdb = redis.NewFailoverClient(&redis.FailoverOptions{
+			MasterName:    masterName,
+			SentinelAddrs: addrs,
+			DB:            3,
+		})
+		log.Printf("Redis: using Sentinel (%d sentinels, master=%s, db=3)", len(addrs), masterName)
+	} else {
+		opts, err := redis.ParseURL(redisURL)
+		if err != nil {
+			return err
+		}
+		rdb = redis.NewClient(opts)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return rdb.Ping(ctx).Err()

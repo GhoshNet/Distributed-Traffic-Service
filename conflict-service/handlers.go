@@ -62,6 +62,22 @@ func cancelBookingSlotHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func listRoutesHandler(w http.ResponseWriter, r *http.Request) {
+	routes, err := listAllRoutes(r.Context())
+	if err != nil {
+		log.Printf("List routes failed: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error":   "internal_error",
+			"message": err.Error(),
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"routes": routes,
+		"count":  len(routes),
+	})
+}
+
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

@@ -65,6 +65,7 @@ class Journey(Base):
     vehicle_type: Mapped[str] = mapped_column(String(20), default="CAR", nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="PENDING", index=True)
     rejection_reason: Mapped[str] = mapped_column(Text, nullable=True)
+    route_id: Mapped[str] = mapped_column(String(50), nullable=True)
     idempotency_key: Mapped[str] = mapped_column(String(100), nullable=True, unique=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False

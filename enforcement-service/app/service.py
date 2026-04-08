@@ -15,6 +15,7 @@ from typing import Optional
 
 import httpx
 import redis.asyncio as redis_async
+from redis.asyncio.sentinel import Sentinel as AsyncSentinel
 
 from shared.schemas import (
     VerificationResponse,
@@ -25,8 +26,22 @@ logger = logging.getLogger(__name__)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/4")
 JOURNEY_SERVICE_URL = os.getenv("JOURNEY_SERVICE_URL", "http://journey-service:8000")
+_SENTINEL_ADDRS = os.getenv("REDIS_SENTINEL_ADDRS", "")
+_MASTER_NAME = os.getenv("REDIS_MASTER_NAME", "mymaster")
 
-redis_client = redis_async.from_url(REDIS_URL, decode_responses=True)
+
+def _make_redis_client() -> redis_async.Redis:
+    if _SENTINEL_ADDRS:
+        hosts = [
+            (h.split(":")[0], int(h.split(":")[1]))
+            for h in _SENTINEL_ADDRS.split(",")
+        ]
+        sentinel = AsyncSentinel(hosts)
+        return sentinel.master_for(_MASTER_NAME, db=4, decode_responses=True)
+    return redis_async.from_url(REDIS_URL, decode_responses=True)
+
+
+redis_client = _make_redis_client()
 
 
 class EnforcementService:
@@ -90,21 +105,40 @@ class EnforcementService:
 
     @staticmethod
     async def verify_by_license(license_number: str) -> VerificationResponse:
-        """Verify by driver's license number (requires user lookup)."""
+        """Verify by driver's license number (requires user lookup).
+
+        License→user_id mapping is cached in Redis (24h TTL) to avoid calling
+        user-service on every enforcement check.
+        """
         from datetime import timedelta
         now = datetime.utcnow()
 
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                # First look up the user by license number
-                user_resp = await client.get(
-                    f"http://user-service:8000/api/users/license/{license_number}"
-                )
-                if user_resp.status_code != 200:
-                    return VerificationResponse(is_valid=False, checked_at=now)
+            # Cache the license→user_id mapping to avoid hitting user-service every time
+            license_cache_key = f"license_user_id:{license_number}"
+            user_id = None
+            try:
+                user_id = await redis_client.get(license_cache_key)
+            except Exception:
+                pass
 
-                user_data = user_resp.json()
-                user_id = user_data["id"]
+            if not user_id:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    user_resp = await client.get(
+                        f"http://user-service:8000/api/users/license/{license_number}"
+                    )
+                    if user_resp.status_code != 200:
+                        return VerificationResponse(is_valid=False, checked_at=now)
+                    user_data = user_resp.json()
+                    user_id = user_data["id"]
+                    # Cache for 24h — license numbers rarely change
+                    try:
+                        await redis_client.setex(license_cache_key, 86400, user_id)
+                        logger.debug(f"Cached license→user_id mapping for {license_number}")
+                    except Exception:
+                        pass
+
+            async with httpx.AsyncClient(timeout=10) as client:
 
                 # Layer 1: Check Redis cache by user_id
                 cached = await EnforcementService._check_cache(

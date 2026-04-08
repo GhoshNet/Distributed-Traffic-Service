@@ -34,6 +34,7 @@ func main() {
 	r.Use(corsMiddleware)
 
 	r.Get("/health", healthHandler)
+	r.Get("/api/routes", listRoutesHandler)
 	r.Post("/api/conflicts/check", checkConflictsHandler)
 	r.Post("/api/conflicts/cancel/{journey_id}", cancelBookingSlotHandler)
 

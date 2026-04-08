@@ -1,0 +1,44 @@
+version: '3.8'
+services:
+  postgres-users-replica:
+    profiles: [full]
+  postgres-journeys-replica:
+    profiles: [full]
+  postgres-conflicts-replica:
+    profiles: [full]
+  postgres-analytics-replica:
+    profiles: [full]
+  redis-replica:
+    profiles: [full]
+  redis-sentinel:
+    profiles: [full]
+  redis-sentinel-2:
+    profiles: [full]
+  redis-sentinel-3:
+    profiles: [full]
+  rabbitmq-2:
+    profiles: [full]
+  rabbitmq-3:
+    profiles: [full]
+  api-gateway-2:
+    profiles: [full]
+  haproxy:
+    profiles: [full]
+  enforcement-service:
+    environment:
+      REDIS_SENTINEL_ADDRS: ""
+  notification-service:
+    environment:
+      REDIS_SENTINEL_ADDRS: ""
+  analytics-service:
+    environment:
+      REDIS_SENTINEL_ADDRS: ""
+  user-service:
+    environment:
+      REDIS_SENTINEL_ADDRS: ""
+  journey-service:
+    environment:
+      REDIS_SENTINEL_ADDRS: ""
+  conflict-service:
+    environment:
+      REDIS_SENTINEL_ADDRS: ""

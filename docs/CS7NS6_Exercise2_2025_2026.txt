@@ -1,0 +1,74 @@
+CS7NS6 Distributed Systems 2025-2026
+
+Exercise 2
+
+Implementing a Globally-accessible Distributed Traffic Service
+
+Imagine a world in which all road-vehicle drivers are required to
+prebook every journey that they wish to make. No driver is allowed to
+start a journey without receiving a notification that the requested
+journey is acceptable.
+
+The exercise is to design, implement and demonstrate a system whose
+primary purpose is to allow drivers to book/cancel journeys and that is
+intended to be globally-accessible.
+
+Note that the focus is not on how the system decides whether a journey
+is acceptable, or how enforcement is handled. However, your system
+should support both considerations.
+
+Your design should focus on performance, scalability, availability and
+reliability, considering that the system may need to support millions of
+users globally.
+
+There is no single correct design. You should: - Define a reasonable set
+of system requirements - Design the system to meet those requirements -
+Avoid over-engineering (higher dependability increases cost)
+
+System requirements:
+
+-   The system must consist of N distributed services (N ≥ number of
+    group members)
+-   Each member must be responsible for at least one service
+-   Services should be loosely coupled
+
+Assessment is based on: - Quality of requirements - Appropriateness of
+design decisions
+
+Design considerations:
+
+Consider using (but not necessarily all): - Transactions - Process
+replication - Checkpointing / message logging - Caching - Load
+balancing - Replication - Partitioning
+
+You must also define: - Isolation levels - Replication degree -
+Consistency model - Failure model assumptions - Fault tolerance approach
+
+Usage and failure considerations:
+
+-   Are users geographically distributed?
+-   Is workload read-heavy or write-heavy?
+-   Is data shared across users?
+-   Are some data items accessed more frequently?
+-   Are failures frequent or rare?
+
+Implementation:
+
+-   You may use any programming language, middleware, or methodology
+    agreed by the group
+-   You must build a deployment framework that allows testing of failure
+    scenarios
+
+Interim deadline:
+
+Submit a short report outlining: - Technical architecture - Technologies
+to be used
+
+Deadline: Friday, 6th March 2026 Report must be signed by all group
+members
+
+Final deadline:
+
+-   Present and demonstrate the system (date to be announced)
+-   Submit final report by 5:00 PM (date to be announced)
+-   Further details will be provided on Blackboard

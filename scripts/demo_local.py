@@ -201,81 +201,132 @@ async def main():
             error(f"Bob vehicle registration failed: {resp.text}")
 
     # ============================================
-    # Step 4: Book Journey (CONFIRMED)
+    # Step 4: Show Predefined Routes
     # ============================================
-    header("Step 4: Book Journey for Alice (Expected: CONFIRMED)")
+    header("Step 4: Available Predefined Road Routes")
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(f"{CONFLICT_URL}/api/routes")
+        if resp.status_code == 200:
+            routes_data = resp.json()
+            success(f"{routes_data['count']} predefined routes available:")
+            for r in routes_data["routes"]:
+                info(f"  [{r['route_id']}] {r['name']} ({r['estimated_duration_minutes']} min)")
+                info(f"    Waypoints: {' → '.join(w['name'] for w in r['waypoints'])}")
+        else:
+            error(f"Could not fetch routes: {resp.text}")
+
+    # ============================================
+    # Step 5: Book Dublin → Galway for Alice (CONFIRMED)
+    # Uses the predefined M6 route with real waypoints
+    # ============================================
+    header("Step 5: Alice books Dublin → Galway via M6 (Expected: CONFIRMED)")
     departure = datetime.utcnow() + timedelta(hours=2)
     journey1 = None
 
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(f"{JOURNEY_URL}/api/journeys/", json={
-            "origin": "Dublin City Centre",
-            "destination": "Cork Airport",
+            "origin": "Dublin",
+            "destination": "Galway",
             "origin_lat": 53.3498, "origin_lng": -6.2603,
-            "destination_lat": 51.8413, "destination_lng": -8.4911,
+            "destination_lat": 53.2707, "destination_lng": -9.0568,
             "departure_time": departure.isoformat(),
-            "estimated_duration_minutes": 180,
+            "estimated_duration_minutes": 135,
             "vehicle_registration": "221-D-12345",
-            "idempotency_key": f"demo-alice-1-{int(time.time())}"
+            "route_id": "dublin-galway",
+            "idempotency_key": f"demo-alice-dub-gal-{int(time.time())}"
         }, headers=alice_headers)
 
         if resp.status_code == 201:
             journey1 = resp.json()
             if journey1["status"] == "CONFIRMED":
-                success(f"Journey CONFIRMED: {journey1['id']}")
-                info(f"  Route: {journey1['origin']} -> {journey1['destination']}")
+                success(f"Alice's Dublin→Galway journey CONFIRMED: {journey1['id']}")
+                info(f"  Road cells locked: Dublin, Leixlip, Kinnegad, Athlone, Ballinasloe, Galway")
             else:
                 info(f"Journey status: {journey1['status']} — {journey1.get('rejection_reason', '')}")
         else:
             error(f"Booking failed: {resp.text}")
 
     # ============================================
-    # Step 5: Book OVERLAPPING Journey (REJECTED)
+    # Step 5b: Driver time overlap (same driver, same time)
     # ============================================
-    header("Step 5: Book Overlapping Journey for Alice (Expected: REJECTED)")
+    header("Step 5b: Alice tries a second journey at same time (Expected: REJECTED — driver overlap)")
     overlap_departure = departure + timedelta(minutes=30)
 
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(f"{JOURNEY_URL}/api/journeys/", json={
-            "origin": "Dublin Airport",
-            "destination": "Galway City",
-            "origin_lat": 53.4264, "origin_lng": -6.2499,
-            "destination_lat": 53.2707, "destination_lng": -9.0568,
+            "origin": "Dublin",
+            "destination": "Cork",
+            "origin_lat": 53.3498, "origin_lng": -6.2603,
+            "destination_lat": 51.8985, "destination_lng": -8.4756,
             "departure_time": overlap_departure.isoformat(),
             "estimated_duration_minutes": 150,
             "vehicle_registration": "221-D-12345",
-            "idempotency_key": f"demo-alice-2-{int(time.time())}"
+            "route_id": "dublin-cork",
+            "idempotency_key": f"demo-alice-dub-cork-{int(time.time())}"
         }, headers=alice_headers)
 
         if resp.status_code == 201:
-            journey2 = resp.json()
-            if journey2["status"] == "REJECTED":
-                success(f"Correctly REJECTED: {journey2.get('rejection_reason')}")
+            j = resp.json()
+            if j["status"] == "REJECTED":
+                success(f"Correctly REJECTED: {j.get('rejection_reason')}")
             else:
-                error(f"Expected REJECTED but got: {journey2['status']}")
+                error(f"Expected REJECTED but got: {j['status']}")
 
     # ============================================
-    # Step 6: Book Journey for Bob (CONFIRMED)
+    # Step 5c: Road capacity conflict (different driver, same road segment)
+    #
+    # Bob tries to book Kinnegad → Athlone — a midpoint segment of the M6.
+    # Even without specifying route_id, the straight-line path between those
+    # two coordinates crosses the same grid cells Alice's M6 booking locked.
+    # With max_capacity=1, this must be REJECTED.
     # ============================================
-    header("Step 6: Book Journey for Bob (Expected: CONFIRMED)")
+    header("Step 5c: Bob books Kinnegad→Athlone (M6 midpoint) at same time (Expected: REJECTED — road capacity)")
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(f"{JOURNEY_URL}/api/journeys/", json={
-            "origin": "Limerick City",
-            "destination": "Waterford City",
-            "origin_lat": 52.6638, "origin_lng": -8.6267,
-            "destination_lat": 52.2593, "destination_lng": -7.1101,
-            "departure_time": departure.isoformat(),
-            "estimated_duration_minutes": 120,
+            "origin": "Kinnegad",
+            "destination": "Athlone",
+            "origin_lat": 53.4608, "origin_lng": -7.1006,
+            "destination_lat": 53.4239, "destination_lng": -7.9407,
+            "departure_time": (departure + timedelta(minutes=45)).isoformat(),
+            "estimated_duration_minutes": 45,
             "vehicle_registration": "231-L-67890",
-            "idempotency_key": f"demo-bob-1-{int(time.time())}"
+            "idempotency_key": f"demo-bob-kin-ath-{int(time.time())}"
+        }, headers=bob_headers)
+
+        if resp.status_code == 201:
+            j = resp.json()
+            if j["status"] == "REJECTED":
+                success(f"Correctly REJECTED (M6 road segment already occupied):")
+                info(f"  {j.get('rejection_reason')}")
+            else:
+                error(f"Expected REJECTED but got: {j['status']} — road conflict not detected")
+
+    # ============================================
+    # Step 6: Bob books a completely different route (CONFIRMED)
+    # Galway → Limerick uses N18, zero grid cell overlap with the M6
+    # ============================================
+    header("Step 6: Bob books Galway → Limerick via N18 (Expected: CONFIRMED — different road)")
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(f"{JOURNEY_URL}/api/journeys/", json={
+            "origin": "Galway",
+            "destination": "Limerick",
+            "origin_lat": 53.2707, "origin_lng": -9.0568,
+            "destination_lat": 52.6638, "destination_lng": -8.6267,
+            "departure_time": departure.isoformat(),
+            "estimated_duration_minutes": 60,
+            "vehicle_registration": "231-L-67890",
+            "route_id": "galway-limerick",
+            "idempotency_key": f"demo-bob-gal-lim-{int(time.time())}"
         }, headers=bob_headers)
 
         if resp.status_code == 201:
             bob_journey = resp.json()
             if bob_journey["status"] == "CONFIRMED":
-                success(f"Bob's journey CONFIRMED: {bob_journey['id']}")
+                success(f"Bob's Galway→Limerick journey CONFIRMED: {bob_journey['id']}")
+                info(f"  N18 route: Galway → Gort → Ennis → Limerick")
+                info(f"  No overlap with Alice's M6 route — correctly allowed")
             else:
-                info(f"Bob's journey: {bob_journey['status']}")
+                info(f"Bob's journey: {bob_journey['status']} — {bob_journey.get('rejection_reason', '')}")
         else:
             error(f"Bob's booking failed: {resp.text}")
 
@@ -381,8 +432,11 @@ async def main():
     header("Demo Complete!")
     info("Flows demonstrated:")
     info("  OK  User registration and JWT authentication")
-    info("  OK  Journey booking with saga pattern + conflict detection")
-    info("  OK  Conflict rejection for overlapping journeys")
+    info("  OK  Predefined road routes fetched from conflict service")
+    info("  OK  Journey booking with real M6 road waypoints (not straight-line)")
+    info("  OK  Driver time-overlap rejection (same driver, overlapping window)")
+    info("  OK  Road capacity rejection: Kinnegad→Athlone blocked by Alice's M6 booking")
+    info("  OK  Independent road confirmed: Bob's N18 Galway→Limerick has zero M6 overlap")
     info("  OK  Enforcement verification (Redis-cached + API fallback)")
     info("  OK  Journey cancellation with RabbitMQ event propagation")
     info("  OK  Notification delivery (WebSocket + Redis history)")
