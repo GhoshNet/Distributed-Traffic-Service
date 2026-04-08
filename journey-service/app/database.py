@@ -13,6 +13,7 @@ replication from the primary with eventual consistency (typical lag < 100ms).
 """
 
 import os
+from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy import String, DateTime, Float, Integer, Boolean, Text, func, Index
@@ -64,7 +65,8 @@ class Journey(Base):
     vehicle_registration: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
     vehicle_type: Mapped[str] = mapped_column(String(20), default="CAR", nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="PENDING", index=True)
-    rejection_reason: Mapped[str] = mapped_column(Text, nullable=True)
+    rejection_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    route_geometry: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     idempotency_key: Mapped[str] = mapped_column(String(100), nullable=True, unique=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False

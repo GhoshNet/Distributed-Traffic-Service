@@ -30,7 +30,7 @@
 | **Conflict Service (Go)** | Functional, RabbitMQ consumer + DLQ properly set up. | Real race condition: capacity check → increment is not atomic. Two concurrent bookings to the same road segment can both pass. No distributed lock. |
 | **Notification Service (Go)** | Solid. WebSocket push, Redis-backed notification history, DLQ, auto-reconnect. | No deduplication — at-least-once delivery means duplicate notifications. WebSocket registry is in-memory only. |
 | **Enforcement Service** | Best caching story. Redis-first, fallback to journey-service HTTP, event-driven cache invalidation, partition staleness headers. | License→user_id lookup hits user-service synchronously every time. Cache is cold on startup. |
-| **Analytics Service (Go)** | Dual-write to Postgres + Redis. Health aggregator endpoint is real. | `hourly_stats` table scaffolded but never written. No event deduplication. Audit HMAC referenced but not implemented. |
+| **Analytics Service (Go)** | Dual-write to Postgres + Redis. Health aggregator endpoint is real. **Startup retries for DB/RabbitMQ implemented.** | `hourly_stats` table scaffolded but logic not yet populating it. No event deduplication (idempotency gap). Audit HMAC incomplete. |
 
 **Infrastructure:** 3-node RabbitMQ cluster (broken — Erlang distribution not set up correctly in Docker), Redis Sentinel with replica, Postgres streaming replication per service, HAProxy + 2 nginx. The RabbitMQ cluster is the only infrastructure piece that doesn't actually work.
 
@@ -60,7 +60,7 @@
 | RabbitMQ clustering | ⚠️ Partial | Configured but Erlang distribution broken in Docker |
 | Redis HA (Sentinel) | ⚠️ Partial | Configured; app services don't use Sentinel URL |
 | Event sourcing / audit log | ⚠️ Partial | `event_logs` table exists; no dedup, HMAC incomplete |
-| Idempotency | ⚠️ Partial | journey-service has idempotency keys; consumers don't |
+| Idempotency | ⚠️ Partial | journey-service has it; logic added to analytics, but end-to-end dedup pending |
 | Eventual consistency | ⚠️ Partial | Claimed; no demo showing it recovering |
 | At-least-once delivery | ⚠️ Partial | Outbox guarantees publish; no consumer dedup |
 | Load balancing | ⚠️ Partial | HAProxy + nginx configured; no traffic to show it |
@@ -101,7 +101,8 @@ WebSocket push to connected clients. Notification history in Redis (7-day TTL). 
 Verifies active bookings by vehicle plate or driving licence. Redis-first with a TTL-based cache; on miss, calls journey-service over HTTP. Cache is invalidated via `journey.cancelled` events consumed from RabbitMQ. Adds `X-Cache-Stale` header when partition is detected. **Gap:** license→user_id resolution is synchronous to user-service on every request.
 
 ### Analytics Service (Go · :8006)
-Dual-write to Postgres and Redis on every journey event. Exposes a `/health/services` endpoint that aggregates the health of all other services. **Gap:** `hourly_stats` table is never populated; no consumer deduplication.
+Dual-write to Postgres and Redis on every journey event. Exposes a `/health/services` endpoint that aggregates the health of all other services. **Update:** Now includes robust startup retry logic for both Postgres and RabbitMQ dependencies.
+**Gap:** `hourly_stats` table logic is not yet implemented; no consumer deduplication.
 
 ---
 
@@ -222,6 +223,7 @@ curl http://localhost:8080/api/analytics/health/services | jq
 - [ ] **Conflict-service: atomic capacity check** — Replace the check → increment sequence with `SELECT FOR UPDATE` or a Redis `SETNX` lock keyed on `user_id:departure_time`. Two concurrent bookings on the same segment both pass today.
 - [ ] **Analytics: idempotent consumers** — Track processed event IDs in Redis. Every RabbitMQ redelivery currently doubles event counts.
 - [ ] **Wire services to Redis Sentinel URL** — Sentinel is running but services connect directly to `redis:6379`. Failover does nothing because clients don't reconnect to the new primary.
+- [x] **Analytics: Startup retries** — Service now waits for Postgres and RabbitMQ to be ready before starting.
 
 ### High impact, low effort
 
@@ -547,3 +549,4 @@ All endpoints go through the nginx gateway at `http://localhost:8080`. All prote
 ### Health
 
 Every service exposes `GET /health` returning `{"status": "healthy", "service": "..."}`.
+

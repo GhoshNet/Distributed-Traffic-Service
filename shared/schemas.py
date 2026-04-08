@@ -146,6 +146,7 @@ class JourneyResponse(BaseModel):
     vehicle_type: VehicleType
     status: JourneyStatus
     rejection_reason: Optional[str] = None
+    route_geometry: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -175,6 +176,7 @@ class ConflictCheckRequest(BaseModel):
     estimated_duration_minutes: int
     vehicle_registration: str
     vehicle_type: VehicleType = Field(default=VehicleType.CAR)
+    route_geometry: Optional[str] = None
 
 
 class ConflictCheckResponse(BaseModel):

@@ -89,7 +89,18 @@ class JourneyService:
 
         logger.info(f"Journey {journey_id} created as PENDING for user {user_id}")
 
-        # Execute the booking saga
+        # Fetch road-network route geometry BEFORE the saga so the conflict service
+        # can check capacity along the full route path, not just origin/destination.
+        # Best-effort — booking proceeds even if OSRM is unavailable.
+        journey.route_geometry = await JourneyService._fetch_osrm_route(
+            journey.origin_lat, journey.origin_lng,
+            journey.destination_lat, journey.destination_lng,
+        )
+        if journey.route_geometry:
+            await db.commit()
+            await db.refresh(journey)
+
+        # Execute the booking saga (conflict check uses route_geometry if available)
         final_status, rejection_reason = await BookingSaga.execute(journey)
 
         # Determine event type
@@ -98,7 +109,7 @@ class JourneyService:
         else:
             event_type = EventType.JOURNEY_REJECTED
 
-        # Update journey status AND write outbox event in the SAME transaction
+        # Update journey status AND write outbox event in the SAME transaction.
         # This is the transactional outbox pattern — guarantees the event is
         # never lost even if RabbitMQ is temporarily unavailable.
         journey.status = final_status.value
@@ -121,6 +132,37 @@ class JourneyService:
                 logger.warning(f"Failed to award booking points: {e}")
 
         return JourneyService._to_response(journey)
+
+    @staticmethod
+    async def _fetch_osrm_route(
+        origin_lat: float, origin_lng: float,
+        dest_lat: float, dest_lng: float,
+    ) -> Optional[str]:
+        """
+        Call the OSRM routing API to get the actual road-network geometry for a journey.
+        Returns a JSON string (GeoJSON LineString) or None if routing fails.
+        Routing happens server-side so the geometry is canonical and stored with the journey.
+        """
+        import json
+        osrm_url = os.getenv(
+            "OSRM_URL",
+            "https://router.project-osrm.org"
+        )
+        url = (
+            f"{osrm_url}/route/v1/driving/"
+            f"{origin_lng},{origin_lat};{dest_lng},{dest_lat}"
+            f"?overview=full&geometries=geojson"
+        )
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                data = resp.json()
+                if data.get("routes"):
+                    return json.dumps(data["routes"][0]["geometry"])
+        except Exception as e:
+            logger.warning(f"OSRM routing failed for ({origin_lat},{origin_lng}) → ({dest_lat},{dest_lng}): {e}")
+        return None
 
     @staticmethod
     async def get_journey(db: AsyncSession, journey_id: str, user_id: str) -> JourneyResponse:
@@ -300,6 +342,7 @@ class JourneyService:
             vehicle_type=journey.vehicle_type,
             status=JourneyStatus(journey.status),
             rejection_reason=journey.rejection_reason,
+            route_geometry=journey.route_geometry,
             created_at=journey.created_at,
             updated_at=journey.updated_at,
         )

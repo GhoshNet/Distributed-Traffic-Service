@@ -1,0 +1,455 @@
+\documentclass[12pt,a4paper]{article}
+
+% ── Packages ──────────────────────────────────────────────────────────────────
+\usepackage[top=2.5cm, bottom=2.5cm, left=2.5cm, right=2.5cm]{geometry}
+\usepackage{tikz}
+\usetikzlibrary{shapes.geometric, arrows.meta, positioning, fit, backgrounds, calc}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+% microtype removed (requires scalable fonts)
+\usepackage{parskip}
+\usepackage[T1]{fontenc}
+\usepackage{amssymb}
+\usepackage{listings}
+\usepackage{caption}
+\usepackage{float}
+
+% ── Colours (all black/grey theme) ───────────────────────────────────────────
+\definecolor{clientblue}{RGB}{210,228,255}
+\definecolor{gatewaygreen}{RGB}{210,240,220}
+\definecolor{svcyellow}{RGB}{255,249,210}
+\definecolor{dbgray}{RGB}{225,225,225}
+\definecolor{mqorange}{RGB}{255,232,210}
+\definecolor{redisred}{RGB}{255,218,218}
+\definecolor{bordercolor}{RGB}{80,80,80}
+\definecolor{accentblack}{RGB}{0,0,0}
+\definecolor{lightgray}{RGB}{245,245,245}
+\definecolor{tablegray}{RGB}{240,240,240}
+
+% ── Section styling (all black) ──────────────────────────────────────────────
+\titleformat{\section}{\large\bfseries\color{black}}{{\thesection}}{1em}{}[\titlerule]
+\titleformat{\subsection}{\normalsize\bfseries\color{black}}{{\thesubsection}}{1em}{}
+
+% ── Header / Footer ──────────────────────────────────────────────────────────
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{\small\textbf{Journey Booking System}}
+\rhead{\small CS7NS6 --- Exercise 2}
+\cfoot{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% ── Hyperref (black links) ───────────────────────────────────────────────────
+\hypersetup{
+  colorlinks=true,
+  linkcolor=black,
+  urlcolor=black,
+  citecolor=black,
+  pdftitle={Journey Booking System — Technical Architecture Report},
+}
+
+% ── Table helpers ─────────────────────────────────────────────────────────────
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcolumntype{C}[1]{>{\centering\arraybackslash}p{#1}}
+
+% ── Code listing style ────────────────────────────────────────────────────────
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  framerule=0.4pt,
+  rulecolor=\color{black},
+}
+
+% ── TikZ node styles ──────────────────────────────────────────────────────────
+\tikzset{
+  base/.style={draw=bordercolor, line width=0.8pt, align=center,
+               font=\small, minimum height=1cm},
+  client/.style   = {base, rounded corners=6pt, fill=clientblue,  minimum width=3.2cm},
+  gateway/.style  = {base, rounded corners=6pt, fill=gatewaygreen, minimum width=6cm, minimum height=2cm},
+  service/.style  = {base, rounded corners=4pt, fill=svcyellow,   minimum width=2.6cm},
+  database/.style = {base, cylinder, shape border rotate=90, aspect=0.3,
+                     fill=dbgray, minimum width=2cm, minimum height=1cm},
+  broker/.style   = {base, rounded corners=4pt, fill=mqorange,    minimum width=2.6cm},
+  cache/.style    = {base, cylinder, shape border rotate=90, aspect=0.3,
+                     fill=redisred, minimum width=2cm, minimum height=1cm},
+  consumer/.style = {base, rounded corners=4pt, fill=svcyellow,   minimum width=3.2cm, minimum height=1.1cm},
+  arr/.style      = {-{Stealth[length=5pt]}, line width=0.8pt, color=bordercolor},
+  darr/.style     = {-{Stealth[length=5pt]}, line width=0.7pt, dashed, color=bordercolor},
+}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{document}
+
+% ── Title Page ────────────────────────────────────────────────────────────────
+\begin{titlepage}
+  \centering
+  \vspace*{2cm}
+  {\LARGE\bfseries Journey Booking System\par}
+  \vspace{0.4cm}
+  {\Large Technical Architecture Report\par}
+  \vspace{1.5cm}
+  \rule{0.6\textwidth}{0.4pt}\par
+  \vspace{0.8cm}
+  {\large\textbf{Module:} CS7NS6 Distributed Systems --- Exercise 2\par}
+  \vspace{0.3cm}
+  {\large\textbf{Date:} 10th March 2026\par}
+  \vspace{0.3cm}
+  \vspace{2cm}
+
+  % Group members table
+  \begin{tabular}{m{4.5cm} m{6cm}}
+    \toprule
+    \textbf{Name} & \textbf{Service Responsibility} \\
+    \midrule
+    Parth Deshmukh & User Service \\\addlinespace[0.4cm]
+    Tanmay Ghosh & Journey Service  \\\addlinespace[0.4cm]
+    Sneha Meto & Conflict Detection Service \\\addlinespace[0.4cm]
+    Aditya Kumar Singh & Notification Service  \\\addlinespace[0.4cm]
+    Saurabh Deshmukh & Enforcement Service  \\\addlinespace[0.4cm]
+    Sai Eeshwar Divaakar & Analytics \& Monitoring Service \\\addlinespace[0.4cm]
+    \bottomrule
+  \end{tabular}
+\end{titlepage} 
+
+% ── Table of Contents ─────────────────────────────────────────────────────────
+\tableofcontents
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Introduction}
+
+This report outlines the technical architecture of a globally-accessible journey pre-booking system for road-vehicle drivers. The system allows drivers to book, cancel, and manage journeys, receive notifications of booking status, and be verified by enforcement agents. It is designed to serve millions of users worldwide with appropriate levels of performance, scalability, availability, and reliability.
+
+The system is structured as \textbf{six distributed microservices} operating in a loosely-coupled manner, communicating via synchronous 
+REST for request-response flows and asynchronous event passing through a message 
+broker for decoupled inter-service communication.
+
+
+The system comprises six loosely-coupled microservices communicating via synchronous 
+REST for request-response flows and asynchronous event passing through a message 
+broker for decoupled inter-service communication.
+
+% ─────────────────────────────────────────────────────────────────────────────
+% \section{System Requirements}
+
+% \subsection{Functional Requirements}
+
+% \begin{table}[H]
+% \centering
+% \small
+% \caption{Functional Requirements}
+% \begin{tabularx}{\textwidth}{C{0.6cm} L{3.2cm} X}
+%   \toprule
+%   \textbf{ID} & \textbf{Requirement} & \textbf{Description} \\
+%   \midrule
+%   FR1 & User Registration \& Authentication & Drivers register an account, authenticate via JWT, and manage their profile including driving licence and vehicle registration details. Passwords are hashed with bcrypt. \\
+%   \addlinespace[0.2cm]
+%   FR2 & Journey Booking & Drivers request a journey by specifying origin, destination, departure time, estimated duration, and vehicle. The system confirms or rejects the booking based on conflict checks. \\
+%   \addlinespace[0.2cm]
+%   FR3 & Conflict Detection & The system checks for scheduling conflicts --- a driver or vehicle cannot have overlapping journeys --- and verifies that road capacity is not exceeded in any geographic area. \\
+%   \addlinespace[0.2cm]
+%   FR4 & Journey Cancellation & Drivers may cancel a previously confirmed journey. Cancellation propagates to all downstream services via event messages. \\
+%   \addlinespace[0.2cm]
+%   FR5 & Real-Time Notifications & Drivers are notified of booking confirmations, rejections, and cancellations via WebSocket push and stored notification history. \\
+%   \addlinespace[0.2cm]
+%   FR6 & Enforcement Verification & Enforcement agents verify, by vehicle registration or driving licence number, whether a driver currently holds a valid, active journey booking. \\
+%   \addlinespace[0.2cm]
+%   FR7 & Analytics \& Monitoring & System operators view real-time statistics (bookings per day, rejection rates, active journeys) and monitor the health of all services via a dashboard. \\
+%   \bottomrule
+% \end{tabularx}
+% \end{table}
+
+% \subsection{Non-Functional Requirements}
+
+% \begin{table}[H]
+% \centering
+% \small
+% \caption{Non-Functional Requirements}
+% \begin{tabularx}{\textwidth}{L{3.2cm} L{3.8cm} X}
+%   \toprule
+%   \textbf{Property} & \textbf{Target} & \textbf{Rationale} \\
+%   \midrule
+%   Availability        & 99.5\% ($\approx$43\,h downtime/year) & Single-instance services with \texttt{restart: unless-stopped}; no replica load balancing in current deployment --- a container restart or brief DB outage creates a gap. \\
+%   \addlinespace[0.15cm]
+%   Booking Latency     & $<2$\,s (p95)    & Happy path (DB write $\to$ sync conflict check $\to$ DB update $\to$ RabbitMQ publish) benchmarks at $\sim$100--500\,ms under light load; 2\,s accommodates p95 under concurrent requests. \\
+%   \addlinespace[0.15cm]
+%   Verification Latency& $<500$\,ms (p95) & Redis cache hit is sub-millisecond; even the fallback REST path stays well under 500\,ms in a co-located deployment. \\
+%   \addlinespace[0.15cm]
+%   Peak Throughput     & $\sim$500 bookings/s & Each service runs two Uvicorn workers; the conflict service is the serial bottleneck --- horizontal scaling would raise this proportionally. \\
+%   \addlinespace[0.15cm]
+%   Consistency         & Strong per-user writes; eventually consistent global reads & A driver always sees their own bookings immediately. \\
+%   \addlinespace[0.15cm]
+%   Durability          & No confirmed booking lost & Zero tolerance for data loss of confirmed bookings. \\
+%   \bottomrule
+% \end{tabularx}
+% \end{table}
+
+% \subsection{Failure Model}
+
+% We adopt a \textbf{crash-recovery} failure model:
+
+% \begin{itemize}[leftmargin=*]
+%   \item \textbf{Process failures:} Services may crash at any time and restart. All persistent state is stored in durable databases, so no committed data is lost on crash.
+%   \item \textbf{Network failures:} Messages between services may be delayed, reordered, or lost. We handle this through retries, idempotency keys, and persistent message queues.
+%   \item \textbf{Byzantine faults:} We assume a trusted internal network between services. Byzantine fault tolerance is not required and would add unjustified complexity.
+%   \item \textbf{Correlated failures:} Mitigated by deploying service replicas independently (in a production setting, across availability zones).
+% \end{itemize}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Technical Architecture}
+
+\subsection{High-Level Overview}
+
+The system follows a \textbf{microservices architecture} with an API Gateway fronting all client traffic. Services communicate synchronously (REST over HTTP) for request-response flows and asynchronously (RabbitMQ message broker) for event-driven flows.
+
+
+\vspace{0.5cm}
+% \begin{center}
+% \fbox{\parbox{0.9\textwidth}{\centering\vspace{0.3cm}
+% \textbf{Architecture Diagram}\\[6pt]
+% \small
+% Client $\longrightarrow$ API Gateway (Nginx) $\longrightarrow$ \{User Svc, Journey Svc, Enforcement Svc, Analytics Svc\}\\[4pt]
+% Journey Svc $\longrightarrow$ Conflict Detection Svc (sync REST)\\[4pt]
+% Journey Svc $\dashrightarrow$ RabbitMQ $\dashrightarrow$ \{Notification Consumer, Enforcement Consumer, Analytics Consumer\}\\[4pt]
+% Each service $\longrightarrow$ Own PostgreSQL / Redis data store
+% \vspace{0.3cm}}}
+% \end{center}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\textwidth]{images/booking-architecture.png}
+    \caption{Architecture diagram}
+    \label{fig:maze_example}
+\end{figure}
+
+
+\vspace{0.3cm}
+
+\subsection{Service Decomposition}
+
+Each of the six services maps to one group member and encapsulates a distinct bounded context:
+
+\begin{table}[H]
+\centering
+\small
+
+\begin{tabularx}{\textwidth}{C{0.4cm} L{3cm} X L{2.8cm} C{1.4cm}}
+  \toprule
+  \textbf{\#} & \textbf{Service} & \textbf{Responsibility} & \textbf{Database} & \textbf{Stateful?} \\
+  \midrule
+  1 & User Service        & Registration, authentication (JWT), driver profiles & PostgreSQL (users\_db) & Yes \\
+  \addlinespace[0.15cm]
+  2 & Journey Service     & Journey CRUD, booking saga orchestration, idempotency & PostgreSQL (journeys\_db) & Yes \\
+  \addlinespace[0.15cm]
+  3 & Conflict Detection  & Time-overlap detection, vehicle-overlap, road-capacity checking & PostgreSQL (conflicts\_db) & Yes \\
+  \addlinespace[0.15cm]
+  4 & Notification Service& Consume events and deliver notifications (WebSocket, stored history) & Redis (notification store) & Minimal \\
+  \addlinespace[0.15cm]
+  5 & Enforcement Service & Verify active bookings by vehicle or licence number & Redis (cache) + Journey Svc & Minimal \\
+  \addlinespace[0.15cm]
+  6 & Analytics Service   & Event logging, real-time counters, aggregated stats, health dashboard & PostgreSQL (analytics\_db) & Yes \\
+  \bottomrule
+\end{tabularx}
+\caption{Service Decomposition}
+\end{table}
+
+Each stateful service owns its own database instance (\textbf{database-per-service} pattern), ensuring loose coupling and independent deployability.
+
+% ─────────────────────────────────────────────────────────────────────────────
+% \section{Keyx Design Decisions \& Distributed Systems Techniques}
+
+% \subsection{Saga Pattern for Distributed Transactions}
+
+% The booking flow spans two services (Journey Service and Conflict Detection Service). Since we avoid distributed locking (which would reduce availability), we use a \textbf{choreography-free saga} orchestrated by the Journey Service:
+
+% \begin{enumerate}
+%   \item Journey Service creates the booking with status \texttt{PENDING}.
+%   \item Journey Service calls Conflict Detection Service synchronously via REST.
+%   \item If no conflict $\rightarrow$ status updated to \texttt{CONFIRMED}; event published.
+%   \item If conflict $\rightarrow$ status updated to \texttt{REJECTED}; event published.
+%   \item \textbf{Compensating action:} If the Conflict Detection Service is unreachable or times out (30\,s), the booking is automatically rejected. The driver can safely retry.
+% \end{enumerate}
+
+% This is a deliberate trade-off: we prioritise \textbf{availability} over attempting the booking at all costs. A rejected booking due to a transient failure is preferable to an inconsistent confirmed booking.
+
+% \subsection{Asynchronous Event-Driven Communication}
+
+% After a booking is confirmed, rejected, or cancelled, the Journey Service publishes an event to \textbf{RabbitMQ} using topic-based routing. Downstream consumers include:
+
+% \begin{itemize}[leftmargin=*]
+%   \item \textbf{Notification Service} --- delivers user-facing notifications.
+%   \item \textbf{Enforcement Service} --- updates its cache of active bookings.
+%   \item \textbf{Analytics Service} --- logs the event for statistics.
+%   \item \textbf{Conflict Detection Service} --- deactivates booking slots on cancellation.
+% \end{itemize}
+
+% Messages are \textbf{persistent} (written to disk before acknowledgement), and failed messages are routed to a \textbf{dead-letter queue} for manual inspection. Each consumer is \textbf{idempotent} (safe to reprocess the same message).
+
+% \subsection{Caching Strategy}
+
+% The Enforcement Service requires sub-500\,ms responses. We achieve this with a \textbf{two-layer lookup}:
+
+% \begin{enumerate}
+%   \item \textbf{Redis cache (primary):} When a journey is confirmed, the Journey Service writes it to Redis with a TTL equal to the journey duration plus a buffer. Cache keys are indexed by both vehicle registration and user ID.
+%   \item \textbf{REST API fallback:} On a cache miss (e.g.\ after a Redis flush), the Enforcement Service queries the Journey Service's database.
+% \end{enumerate}
+
+% Cache invalidation is event-driven: cancellation events trigger cache removal via RabbitMQ.
+
+% \subsection{Idempotency}
+
+% Every booking request may include a client-generated \textbf{idempotency key}. The Journey Service stores a mapping of processed keys to journey IDs. If a retry arrives with the same key, the existing journey is returned without creating a duplicate. This makes retries safe across network failures and client timeouts.
+ 
+% \subsection{Rate Limiting \& Load Balancing}
+
+% The \textbf{Nginx API Gateway} provides:
+
+% \begin{itemize}[leftmargin=*]
+%   \item \textbf{Per-IP rate limiting:} Auth endpoints (5\,req/s), booking endpoints (10\,req/s), general endpoints (30\,req/s). This protects against abuse and provides backpressure during traffic spikes.
+%   \item \textbf{Round-robin load balancing} across service replicas, with automatic removal of unhealthy instances based on \texttt{/health} endpoint checks.
+% \end{itemize}
+
+% \subsection{Partitioning}
+
+% \begin{itemize}[leftmargin=*]
+%   \item \textbf{Journey data} is logically partitioned by \textbf{user ID} (hash-based). This ensures a user's journeys are co-located, enabling efficient queries.
+%   \item \textbf{Road capacity data} in the Conflict Detection Service is partitioned by \textbf{geographic region} using a grid system ($\approx$1\,km cells), allowing regional conflict detection to scale independently.
+% \end{itemize}
+
+% \subsection{Replication}
+
+% \begin{itemize}[leftmargin=*]
+%   \item Each PostgreSQL database is designed for \textbf{primary + read replica} streaming replication. Read-heavy services (Enforcement) route queries to replicas.
+%   \item Redis operates with \textbf{append-only persistence} for durability.
+%   \item All application services are \textbf{stateless} (session state is in JWT tokens and Redis), enabling horizontal scaling by running multiple replicas behind the load balancer.
+% \end{itemize}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Technology Stack}
+
+\begin{table}[H]
+\centering
+\small
+
+\begin{tabularx}{\textwidth}{L{3cm} L{3.8cm} X}
+  \toprule
+  \textbf{Component} & \textbf{Technology} & \textbf{Justification} \\
+  \midrule
+  Language        & Python 3.12              & Fast development cycle, rich async ecosystem, group familiarity. Suitable for User, Journey, and Enforcement Services. \\
+  \addlinespace[0.1cm]
+         & Go 1.22                  & Offers faster execution and reduced latency. Ideal for high-throughput microservices, native goroutine concurrency, and minimal memory footprint in distributed components. Can be utilised for Conflict Detection, Notification and Analytics Services. \\
+  \addlinespace[0.1cm]
+  
+  Web Framework   & FastAPI                  & Native async/await, high throughput, automatic OpenAPI documentation. \\
+  \addlinespace[0.1cm]
+  Database        & PostgreSQL 16            & ACID guarantees, mature streaming replication, table partitioning, JSON support. \\
+  \addlinespace[0.1cm]
+  Cache           & Redis 7                  & Sub-millisecond lookups, TTL-based expiry, append-only persistence. \\
+  \addlinespace[0.1cm]
+  Message Broker  & RabbitMQ 3.13            & Durable topic-based routing, dead-letter queues, built-in management UI. \\
+  \addlinespace[0.1cm]
+  API Gateway     & Nginx                    & Industry-standard reverse proxy, built-in rate limiting and health checks. \\
+  \addlinespace[0.1cm]
+  ORM             & SQLAlchemy 2.0 (async)   & Mature ORM with full async support and migration tooling (Alembic). \\
+  \addlinespace[0.1cm]
+  Authentication  & JWT (PyJWT + bcrypt)     & Stateless, scalable, no session store required. \\
+  \addlinespace[0.1cm]
+  Containerisation& Docker + Docker Compose  & Reproducible multi-service deployment, straightforward failure injection for testing. \\
+  \bottomrule
+\end{tabularx}
+\caption{Technology Stack}
+\end{table}
+
+% ─────────────────────────────────────────────────────────────────────────────
+% \section{Usage \& Failure Patterns Considered}
+
+% \begin{table}[H]
+% \centering
+% \small
+% \caption{Usage and Failure Patterns}
+% \begin{tabularx}{\textwidth}{L{4.5cm} X}
+%   \toprule
+%   \textbf{Pattern} & \textbf{Design Response} \\
+%   \midrule
+%   \textbf{Peak hours} (morning/evening rush)
+%     & Horizontal scaling via stateless replicas; Redis caching reduces database load. \\
+%   \addlinespace[0.15cm]
+%   \textbf{Read-heavy workload} (enforcement checks far exceed bookings)
+%     & Read replicas for databases; Redis cache-first strategy for enforcement. \\
+%   \addlinespace[0.15cm]
+%   \textbf{Geographically distributed users}
+%     & Stateless services enable multi-region deployment; geographic partitioning of road capacity data. \\
+%   \addlinespace[0.15cm]
+%   \textbf{Data locality}
+%     & User's journeys co-located via hash-based partitioning on user ID. \\
+%   \addlinespace[0.15cm]
+%   \textbf{Failure frequency}
+%     & Crash-recovery model; failures handled gracefully via saga compensations, message persistence, and idempotency. \\
+%   \bottomrule
+% \end{tabularx}
+% \end{table}
+
+% ─────────────────────────────────────────────────────────────────────────────
+% \section{Testing \& Demonstration Strategy}
+
+% We have built a \textbf{deployment framework} using Docker Compose that enables both normal operation and fault-injection testing:
+
+% \begin{table}[H]
+% \centering
+% \small
+% \caption{Testing Strategy}
+% \begin{tabularx}{\textwidth}{L{2.8cm} L{3.5cm} X}
+%   \toprule
+%   \textbf{Test Type} & \textbf{Tool} & \textbf{Description} \\
+%   \midrule
+%   End-to-end demo   & \texttt{scripts/demo.py}          & Exercises the full lifecycle: registration $\to$ login $\to$ booking $\to$ conflict rejection $\to$ enforcement check $\to$ cancellation $\to$ analytics. \\
+%   \addlinespace[0.15cm]
+%   Failure scenarios & \texttt{scripts/failure\_tests.py}& Simulates service crashes, cache failures, broker restarts, and database outages using \texttt{docker compose stop/pause/restart}. \\
+%   \addlinespace[0.15cm]
+%   Load testing      & \texttt{scripts/load\_test.py}    & Concurrent user simulation with latency percentile reporting (p50, p95, p99) and throughput measurement. \\
+%   \bottomrule
+% \end{tabularx}
+% \end{table}
+
+% \subsection{Key Failure Scenarios}
+
+% \begin{enumerate}
+%   \item \textbf{Conflict Service crash during booking:} Saga times out $\to$ booking rejected $\to$ driver retries successfully after service recovery.
+%   \item \textbf{Redis cache flushed:} Enforcement Service falls back to REST API to the Journey Service; cache repopulates on subsequent lookups.
+%   \item \textbf{RabbitMQ restart:} Persistent messages survive restart; consumers auto-reconnect and resume processing.
+%   \item \textbf{Database outage:} Service returns HTTP 503; after database recovery, normal operation resumes with no data loss.
+% \end{enumerate}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Summary}
+
+Our system decomposes the journey booking problem into six independently deployable microservices, each owned by one group member. The architecture applies several distributed systems techniques like the saga pattern, asynchronous messaging, caching with fallback, idempotency, rate limiting, and geographic partitioning, all while deliberately avoiding unnecessary complexity such as Byzantine fault tolerance or distributed locking. The result is a system that balances performance, scalability, and reliability.
+
+% ── Signature Table ───────────────────────────────────────────────────────────
+\vspace{2cm}
+\begin{table}[h!]
+\centering
+\caption*{\textbf{Signatures}}
+\begin{tabular}{m{5cm} m{5cm} m{2.5cm}}
+  \toprule
+  \textbf{Name} & \textbf{Signature} & \textbf{Date} \\
+  \midrule
+ Sneha Meto & \includegraphics[width=0.25\textwidth]{images/sneha.png} & \the\day/\the\month/\the\year\\\addlinespace[0.5cm]
+  Sai Eeshwar Divaakar & \includegraphics[width=0.2\textwidth]{images/sheesh.png}& \the\day/\the\month/\the\year\\\addlinespace[0.5cm]
+  Saurabh Deshmukh &
+  \includegraphics[width=0.25\textwidth]{images/Signature_Saurabh.jpeg}& \the\day/\the\month/\the\year\\\addlinespace[0.5cm]
+  Parth Deshmukh & \includegraphics[width=0.25\textwidth , height = 2cm]{images/output.jpg} & \the\day/\the\month/\the\year\\\addlinespace[0.5cm]
+  Aditya Kumar Singh &
+  \includegraphics[width=0.25\textwidth]{images/signature.png}& \the\day/\the\month/\the\year \\\addlinespace[0.5cm]
+  Tanmay Ghosh & \includegraphics[width=0.25\textwidth , height = 2cm]{images/Tanmay.png} & \the\day/\the\month/\the\year\\
+  \bottomrule
+\end{tabular}
+\end{table}
+
+\end{document}

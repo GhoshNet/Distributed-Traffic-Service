@@ -50,7 +50,9 @@ async def _run_transitions():
         for j in to_start:
             j.status = JourneyStatus.IN_PROGRESS.value
             logger.info(f"Transitioning journey {j.id} to IN_PROGRESS")
-            await BookingSaga.publish_journey_event(j, EventType.JOURNEY_STARTED)
+            # Write outbox event in the same transaction — guarantees at-least-once
+            # delivery without publishing to RabbitMQ before the DB commit (TOCTOU fix).
+            await BookingSaga.save_outbox_event(db, j, EventType.JOURNEY_STARTED)
 
         # 2. Complete journeys: IN_PROGRESS -> COMPLETED
         completed_query = select(Journey).where(
@@ -65,7 +67,7 @@ async def _run_transitions():
         for j in to_complete:
             j.status = JourneyStatus.COMPLETED.value
             logger.info(f"Transitioning journey {j.id} to COMPLETED")
-            await BookingSaga.publish_journey_event(j, EventType.JOURNEY_COMPLETED)
+            await BookingSaga.save_outbox_event(db, j, EventType.JOURNEY_COMPLETED)
 
             # Award points for completing a journey
             try:
@@ -78,4 +80,6 @@ async def _run_transitions():
                 logger.warning(f"Failed to award completion points for {j.id}: {e}")
 
         if to_start or to_complete:
+            # Single commit: status updates + outbox events are atomic.
+            # The outbox publisher will drain events to RabbitMQ independently.
             await db.commit()

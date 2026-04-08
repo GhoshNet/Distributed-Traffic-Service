@@ -139,22 +139,56 @@ function handleLiveEvent(data) {
     document.body.appendChild(toast);
     setTimeout(()=> toast.remove(), 5000);
 
-    // If journey confirmed, add a line to map
+    // Draw the confirmed journey route on the live map
     if(data.event_type === "journey.confirmed" && data.metadata) {
         const m = data.metadata;
-        if(m.origin_lat) {
-            const org = [m.origin_lat, m.origin_lng];
-            const dst = [m.destination_lat, m.destination_lng];
-            L.polyline([org, dst], {color: '#8a2be2', weight: 3, opacity: 0.7, dashArray: '5,10'}).addTo(layerGroup);
-            L.circleMarker(org, {radius:6, color:'#00e676', fillOpacity:1}).bindPopup(`Origin: ${m.origin}`).addTo(layerGroup);
-            L.circleMarker(dst, {radius:6, color:'#ff1744', fillOpacity:1}).bindPopup(`Dest: ${m.destination}`).addTo(layerGroup);
-        }
+        if(m.origin_lat) drawRoute(m, layerGroup);
     }
 
     // Refresh journey list when we get journey events via WebSocket
     if(data.event_type && data.event_type.startsWith("journey.")) {
         loadJourneys();
     }
+}
+
+// Draw a journey route on the given Leaflet layer group.
+// Priority: 1) stored GeoJSON geometry from backend  2) OSRM live fetch  3) straight-line fallback
+async function drawRoute(j, layerRef) {
+    const org = [j.origin_lat, j.origin_lng];
+    const dst = [j.destination_lat, j.destination_lng];
+    const routeStyle = {color: '#8a2be2', weight: 3, opacity: 0.85};
+
+    L.circleMarker(org, {radius:7, color:'#00e676', fillColor:'#00e676', fillOpacity:1})
+        .bindPopup(`<b>Origin</b><br>${j.origin || ''}`)
+        .addTo(layerRef);
+    L.circleMarker(dst, {radius:7, color:'#ff1744', fillColor:'#ff1744', fillOpacity:1})
+        .bindPopup(`<b>Destination</b><br>${j.destination || ''}`)
+        .addTo(layerRef);
+
+    // 1. Use stored server-side geometry (computed by journey service via OSRM at booking time)
+    if (j.route_geometry) {
+        try {
+            const geom = typeof j.route_geometry === 'string' ? JSON.parse(j.route_geometry) : j.route_geometry;
+            L.geoJSON(geom, {style: () => routeStyle}).addTo(layerRef);
+            return;
+        } catch(e) { console.warn('Failed to parse stored route geometry:', e); }
+    }
+
+    // 2. Fetch from OSRM directly (actual road network, no API key required)
+    try {
+        const url = `https://router.project-osrm.org/route/v1/driving/${j.origin_lng},${j.origin_lat};${j.destination_lng},${j.destination_lat}?overview=full&geometries=geojson`;
+        const r = await fetch(url);
+        if (r.ok) {
+            const data = await r.json();
+            if (data.routes && data.routes[0]) {
+                L.geoJSON(data.routes[0].geometry, {style: () => routeStyle}).addTo(layerRef);
+                return;
+            }
+        }
+    } catch(e) { console.warn('OSRM routing unavailable, using straight line:', e); }
+
+    // 3. Fallback: straight line
+    L.polyline([org, dst], {...routeStyle, dashArray: '5,10'}).addTo(layerRef);
 }
 
 async function authFetch(url, opts={}) {
@@ -275,6 +309,9 @@ async function bookJourney(e) {
             showToast(`Rejected: ${d.rejection_reason}`, "error");
         } else {
             showToast("Journey booked successfully!", "success");
+            // Draw the actual road route immediately from the POST response —
+            // avoids read-replica lag; uses server-stored geometry if OSRM succeeded.
+            if(d.origin_lat && layerGroup) drawRoute(d, layerGroup);
         }
         // Render the newly created journey immediately from the POST response
         appendJourneyToList(d);
@@ -318,18 +355,12 @@ async function loadJourneys() {
             list.innerHTML = journeys.map(j => renderJourneyItem(j)).join('');
         }
 
-        // Update map with confirmed/in-progress journeys
+        // Re-render all active routes on the map using actual road geometry.
         try {
             layerGroup.clearLayers();
-            journeys.forEach(j => {
-                if((j.status === "CONFIRMED" || j.status === "IN_PROGRESS") && j.origin_lat) {
-                    const org = [j.origin_lat, j.origin_lng];
-                    const dst = [j.destination_lat, j.destination_lng];
-                    L.polyline([org, dst], {color: '#8a2be2', weight: 3, opacity: 0.7, dashArray: '5,10'}).addTo(layerGroup);
-                    L.circleMarker(org, {radius:6, color:'#00e676', fillOpacity:1}).bindPopup(`Origin: ${j.origin}`).addTo(layerGroup);
-                    L.circleMarker(dst, {radius:6, color:'#ff1744', fillOpacity:1}).bindPopup(`Dest: ${j.destination}`).addTo(layerGroup);
-                }
-            });
+            journeys
+                .filter(j => (j.status === "CONFIRMED" || j.status === "IN_PROGRESS") && j.origin_lat)
+                .forEach(j => drawRoute(j, layerGroup)); // async — routes appear progressively
         } catch(mapErr) {
             console.warn('Map update failed:', mapErr);
         }

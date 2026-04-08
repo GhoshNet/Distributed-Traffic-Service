@@ -156,12 +156,25 @@ func handleEvent(body []byte, routingKey string) error {
 	msg = strings.ReplaceAll(msg, "{departure_time}", strField(data, "departure_time", "Unknown"))
 	msg = strings.ReplaceAll(msg, "{rejection_reason}", strField(data, "rejection_reason", "N/A"))
 
+	// Include coordinate metadata so the frontend can render the route on the
+	// live map without a separate API round-trip.
+	metadata := map[string]interface{}{
+		"origin":          strField(data, "origin", ""),
+		"destination":     strField(data, "destination", ""),
+		"origin_lat":      data["origin_lat"],
+		"origin_lng":      data["origin_lng"],
+		"destination_lat": data["destination_lat"],
+		"destination_lng": data["destination_lng"],
+		"route_geometry":  data["route_geometry"],
+	}
+
 	notification := map[string]interface{}{
 		"event_type": routingKey,
 		"title":      tmpl.title,
 		"message":    msg,
 		"journey_id": data["journey_id"],
 		"timestamp":  time.Now().UTC().Format(time.RFC3339),
+		"metadata":   metadata,
 	}
 
 	log.Printf("📧 NOTIFICATION for user %s: %s — %s", userID, tmpl.title, msg)
