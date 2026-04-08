@@ -17,6 +17,7 @@ from shared.schemas import (
     UserLoginRequest,
     UserResponse,
     TokenResponse,
+    UserRole,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,7 @@ class UserService:
             email=user.email,
             full_name=user.full_name,
             license_number=user.license_number,
+            role=UserRole(user.role),  # type: ignore[arg-type]
             created_at=user.created_at,
         )
 
@@ -123,7 +125,7 @@ class UserService:
             email=user.email,
             full_name=user.full_name,
             license_number=user.license_number,
-            role=user.role,
+            role=UserRole(user.role),  # type: ignore[arg-type]
             created_at=user.created_at,
         )
 
@@ -143,7 +145,7 @@ class UserService:
             email=user.email,
             full_name=user.full_name,
             license_number=user.license_number,
-            role=user.role,
+            role=UserRole(user.role),  # type: ignore[arg-type]
             created_at=user.created_at,
         )
 

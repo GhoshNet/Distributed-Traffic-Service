@@ -141,6 +141,37 @@ async def node_health():
     return health_monitor.get_status()
 
 
+@app.post("/admin/peers/register")
+async def register_peer(payload: dict):
+    """
+    Dynamically register a remote peer node to monitor.
+
+    Useful when teammates run the stack on their own machines on the same
+    LAN/hotspot. POST the peer's journey-service /health URL and it will
+    appear in /health/nodes within one heartbeat cycle (~10 s).
+
+    Body: {"name": "peer-alice", "health_url": "http://192.168.1.42:8080/health/nodes"}
+    """
+    name = payload.get("name")
+    health_url = payload.get("health_url")
+    if not name or not health_url:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="Both 'name' and 'health_url' are required")
+    health_monitor.register(name, health_url)
+    return {"registered": name, "health_url": health_url,
+            "note": "Will appear in /health/nodes within 10 seconds"}
+
+
+@app.delete("/admin/peers/{name}")
+async def unregister_peer(name: str):
+    """Remove a dynamically registered peer from health monitoring."""
+    if name not in health_monitor._peers:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=f"Peer '{name}' not found")
+    del health_monitor._peers[name]
+    return {"unregistered": name}
+
+
 @app.post("/admin/2pc/demo")
 async def run_2pc_demo():
     """

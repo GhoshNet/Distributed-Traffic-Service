@@ -14,10 +14,11 @@
 4. [System Architecture](#4-system-architecture)
 5. [Infrastructure](#5-infrastructure)
 6. [Deployment](#6-deployment)
-7. [Bugs Fixed & Improvements Made](#7-bugs-fixed--improvements-made)
-8. [Remaining Gaps](#8-remaining-gaps)
-9. [Demo Script](#9-demo-script)
-10. [API Reference](#10-api-reference)
+7. [Local & Multi-Device Testing](#7-local--multi-device-testing)
+8. [Bugs Fixed & Improvements Made](#8-bugs-fixed--improvements-made)
+9. [Remaining Gaps](#9-remaining-gaps)
+10. [Demo Script](#10-demo-script)
+11. [API Reference](#11-api-reference)
 
 ---
 
@@ -302,7 +303,218 @@ Kill Machine A mid-demo → shows circuit breaker opening, outbox buffering, and
 
 ---
 
-## 7. Bugs Fixed & Improvements Made
+## 7. Local & Multi-Device Testing
+
+### Single machine — full stack
+
+**Prerequisites:** Docker Desktop, 8 GB+ RAM. Tested on macOS and Linux.
+
+```bash
+git clone <repo>
+cd Distributed-Traffic-Service
+
+# Slim mode (recommended — 14 containers, ~2.5 GB RAM)
+docker compose -f docker-compose.yml -f docker-compose.slim.yml up -d --build
+
+# Wait ~30 s for services to initialise, then verify
+curl http://localhost:8080/api/analytics/health/services | python3 -m json.tool
+```
+
+Open `http://localhost:8080` in your browser. Register → book a journey → watch the map.
+
+---
+
+### Hotspot / LAN — one host serves the whole team
+
+**Goal:** One person runs the stack on their laptop; everyone else on the same Wi-Fi / mobile hotspot accesses it via the host's LAN IP.
+
+**Step 1 — find your LAN IP**
+
+```bash
+# macOS
+ipconfig getifaddr en0        # Wi-Fi
+ipconfig getifaddr en1        # Ethernet (or check for utun / bridge when on a hotspot)
+
+# Linux
+hostname -I | awk '{print $1}'
+```
+
+> On a mobile hotspot the interface is usually `bridge100` (macOS) or `wlan0` (Linux). Use `ifconfig` / `ip addr` to find the address assigned to you — it is typically `172.20.10.x`.
+
+**Step 2 — start the stack**
+
+No extra configuration needed. The nginx container already listens on `0.0.0.0:8080`.
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.slim.yml up -d --build
+```
+
+**Step 3 — share the URL with teammates**
+
+Everyone on the same network opens:
+
+```
+http://<YOUR_LAN_IP>:8080
+```
+
+Example: `http://172.20.10.4:8080`
+
+> macOS may ask you to allow incoming connections in the firewall. Allow Docker Desktop through System Settings → Network → Firewall.
+
+**Step 4 — register separate accounts**
+
+Each person registers their own account and registers a vehicle. Journeys from different users are independent; the conflict service will reject two journeys that overlap on the same road segment at the same time.
+
+---
+
+### Multi-device distributed mode — each person runs their own stack
+
+This shows the real distributed nature: each teammate's laptop runs the full stack, and the instances monitor each other's health using the Archive-style ALIVE/SUSPECT/DEAD model.
+
+**Step 1 — everyone starts their own stack**
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.slim.yml up -d --build
+```
+
+**Step 2 — register peer nodes**
+
+Each instance can watch any other instance's health. Replace IP addresses with your teammates' LAN IPs:
+
+```bash
+# On Alice's machine — register Bob and Charlie as watched peers
+curl -X POST http://localhost:8080/admin/peers/register \
+  -H "Content-Type: application/json" \
+  -d '{"name": "bob-node", "health_url": "http://192.168.1.20:8080/health/nodes"}'
+
+curl -X POST http://localhost:8080/admin/peers/register \
+  -H "Content-Type: application/json" \
+  -d '{"name": "charlie-node", "health_url": "http://192.168.1.21:8080/health/nodes"}'
+```
+
+**Step 3 — watch health in the UI**
+
+Open the Dashboard → **Node Health** panel. Peer nodes appear with ALIVE / SUSPECT / DEAD badges. Stop a teammate's Docker stack (`docker compose down`) and within 30 seconds their node transitions from ALIVE → SUSPECT → DEAD.
+
+**Step 4 — unregister a peer**
+
+```bash
+curl -X DELETE http://localhost:8080/admin/peers/bob-node
+```
+
+**What you can demo with this setup:**
+
+| Action | What it shows |
+|---|---|
+| Stop a peer's stack | ALIVE → SUSPECT → DEAD transition (3 missed pings, then 6) |
+| Restart the peer | Automatic recovery back to ALIVE |
+| Less than 50% peers alive | LOCAL_ONLY mode activates — shown by red badge in dashboard |
+| Each person books a journey | No conflicts unless on the same road segment at the same time |
+| Run `python scripts/simulate_problems.py --gateway http://<PEER_IP>:8080 --token <JWT>` | Target a different person's stack with the simulation script |
+
+---
+
+### Simulation script
+
+The simulation script (`scripts/simulate_problems.py`) is an interactive CLI that demonstrates all distributed problems from the original Archive:
+
+```bash
+# Install deps (once)
+pip install httpx
+
+# Run against your own stack
+python scripts/simulate_problems.py --gateway http://localhost:8080 --token <JWT>
+
+# Run against a teammate's stack on a hotspot
+python scripts/simulate_problems.py --gateway http://172.20.10.4:8080 --token <JWT>
+```
+
+Get a JWT token by logging in first:
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8080/api/users/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"demo@example.com","password":"pass123"}' | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+python scripts/simulate_problems.py --gateway http://localhost:8080 --token "$TOKEN"
+```
+
+**Available demos:**
+
+| # | Name | What it shows |
+|---|---|---|
+| 1 | Data Consistency Conflict | Two concurrent bookings on the same time slot → second is rejected by SERIALIZABLE isolation |
+| 2 | Concurrent Booking Storm | 5 bookings in parallel → race conditions handled by SELECT FOR UPDATE |
+| 3 | 2PC / TCC Demo | Two-Phase Commit: PREPARE phase checks conflict, COMMIT confirms or ABORT rolls back |
+| 4 | Failure Detection | Archive-style ALIVE→SUSPECT→DEAD health state machine — stop a service to trigger |
+| 5 | Circuit Breaker | Stop conflict-service → breaker opens after 3 failures, subsequent calls fail instantly |
+| 6 | Graceful Degradation | More than half peers down → LOCAL_ONLY mode, system degrades rather than crashes |
+| 7 | Transactional Outbox | Stop RabbitMQ, book a journey (succeeds), restart — event drains automatically |
+
+---
+
+### Booking and Cancellation Logic
+
+**Saga pattern (default)**
+
+```
+Client POST /api/journeys/
+  → journey-service creates journey row (PENDING)
+  → calls conflict-service POST /api/conflicts/check
+      conflict-service: SERIALIZABLE tx + SELECT FOR UPDATE
+        - checkDriverOverlap: reject if same driver has overlapping confirmed journey
+        - checkVehicleOverlap: reject if same vehicle is already booked
+        - checkRoadCapacity: reject if grid cell is at max_capacity for that time slot
+        - if all pass: reserve slot, return "approved"
+  ← approved / rejected
+  → if approved: write journey row + outbox event in same DB transaction → CONFIRMED
+  → if rejected: update journey to REJECTED, set rejection_reason
+  → background drains outbox → RabbitMQ
+      → notification-service: WebSocket push to driver
+      → analytics-service: increment stats
+      → enforcement-service: cache active journey in Redis
+```
+
+**2PC / TCC pattern (select `?mode=2pc` or choose in UI)**
+
+```
+PREPARE phase:
+  → TwoPhaseCoordinator._try_phase()
+  → POST /api/conflicts/check (same as saga, but treated as "reserve tentatively")
+  ← OK → proceed to COMMIT
+
+COMMIT phase:
+  → journey confirmed in DB + outbox event written
+
+ABORT phase (if PREPARE fails):
+  → TwoPhaseCoordinator._cancel_phase()
+  → POST /api/conflicts/cancel/{journey_id}  (releases reserved slot)
+  → journey set to REJECTED with reason
+```
+
+The key difference: in 2PC, if the journey fails *after* the conflict-service reserves the slot, the coordinator explicitly cancels the reservation via the compensating transaction. In the Saga path, the saga simply does not confirm — the slot was never held.
+
+**Cancellation**
+
+```
+Client DELETE /api/journeys/{id}
+  → journey-service: verify ownership, set status CANCELLED
+  → write journey.cancelled event to outbox (same transaction)
+  → background drains → RabbitMQ
+      → conflict-service consumer: releases road capacity slot
+      → notification-service: notifies driver of cancellation
+      → enforcement-service: removes active journey from Redis cache
+      → analytics-service: increments cancelled counter
+```
+
+**Points system**
+
+Each confirmed journey earns the driver points (based on distance / duration). Points are stored in the `points_ledger` table with `SELECT FOR UPDATE` on write to prevent concurrent updates corrupting the balance. The dashboard shows your current balance.
+
+---
+
+## 8. Bugs Fixed & Improvements Made
+
 
 This section documents every concrete problem found and resolved during development and testing.
 
@@ -392,7 +604,7 @@ until REDIS_IP=$$(getent hosts redis | awk '{print $$1; exit}') && [ -n "$$REDIS
 
 ---
 
-## 8. Remaining Gaps
+## 9. Remaining Gaps
 
 These are known limitations that do not affect the demo but are documented for completeness.
 
@@ -408,7 +620,7 @@ These are known limitations that do not affect the demo but are documented for c
 
 ---
 
-## 9. Demo Script
+## 10. Demo Script
 
 Two ways to run the demo:
 
@@ -538,7 +750,7 @@ docker compose logs journey-service | grep -i "MERGING\|CONNECTED"
 
 ---
 
-## 10. API Reference
+## 11. API Reference
 
 Direct service ports (no gateway). In Docker, prefix with gateway at `:8080` where nginx routing is configured.
 
@@ -564,7 +776,13 @@ Direct service ports (no gateway). In Docker, prefix with gateway at `:8080` whe
 | `DELETE` | `/api/journeys/{id}` | ✅ | Cancel a journey |
 | `GET` | `/api/journeys/user/{user_id}/active` | — | Active journeys for a user (internal) |
 | `GET` | `/api/journeys/vehicle/{reg}/active` | — | Active journeys for a vehicle (internal) |
+| `GET` | `/health/nodes` | — | Per-peer ALIVE/SUSPECT/DEAD status (Archive health model) |
 | `GET` | `/health/partitions` | — | Partition detection state |
+| `POST` | `/admin/peers/register` | — | Register a remote peer node to monitor (multi-device) |
+| `DELETE` | `/admin/peers/{name}` | — | Remove a monitored peer |
+| `POST` | `/admin/2pc/demo` | — | Information about 2PC endpoints |
+| `POST` | `/admin/recovery/drain-outbox` | — | Force-drain unpublished outbox events |
+| `POST` | `/admin/recovery/rebuild-enforcement-cache` | — | Rebuild enforcement Redis cache from DB |
 
 ### Conflict Service (:8003)
 
