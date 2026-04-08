@@ -13,6 +13,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+var ErrCapacityExceeded = errors.New("road capacity exceeded due to concurrent booking")
+
 
 // FlexTime accepts RFC3339 with or without timezone offset.
 type FlexTime struct{ time.Time }
@@ -127,6 +129,17 @@ func checkConflicts(ctx context.Context, req ConflictCheckRequest) (ConflictChec
 
 	// No conflict — record the slot and commit atomically
 	if err := recordBookingSlot(ctx, tx, req, arrivalTime); err != nil {
+		if errors.Is(err, ErrCapacityExceeded) {
+			ct := "ROAD_CAPACITY"
+			details := "Road at capacity: concurrent vehicle booked."
+			return ConflictCheckResponse{
+				JourneyID:       req.JourneyID,
+				IsConflict:      true,
+				ConflictType:    &ct,
+				ConflictDetails: &details,
+				CheckedAt:       time.Now().UTC(),
+			}, nil
+		}
 		return ConflictCheckResponse{}, err
 	}
 
@@ -394,14 +407,23 @@ func incrementCapacity(ctx context.Context, tx pgx.Tx, lat, lng float64, t time.
 	slotStart := time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), minutes, 0, 0, time.UTC)
 	slotEnd := slotStart.Add(capacitySlotMinutes * time.Minute)
 
-	_, err := tx.Exec(ctx, `
+	var newCount, maxCap int
+	err := tx.QueryRow(ctx, `
 		INSERT INTO road_segment_capacity
 			(id, grid_lat, grid_lng, time_slot_start, time_slot_end, current_bookings, max_capacity)
 		VALUES ($1, $2, $3, $4, $5, 1, $6)
 		ON CONFLICT (grid_lat, grid_lng, time_slot_start)
 		DO UPDATE SET current_bookings = road_segment_capacity.current_bookings + 1
-	`, uuid.New().String(), gridLat, gridLng, slotStart, slotEnd, defaultMaxCapacity)
-	return err
+		RETURNING current_bookings, max_capacity
+	`, uuid.New().String(), gridLat, gridLng, slotStart, slotEnd, defaultMaxCapacity).Scan(&newCount, &maxCap)
+	
+	if err != nil {
+		return err
+	}
+	if newCount > maxCap {
+		return ErrCapacityExceeded
+	}
+	return nil
 }
 
 var ErrNotFound = errors.New("journey not found")
@@ -497,6 +519,18 @@ func holdConflicts(ctx context.Context, req ConflictCheckRequest) (HoldConflictR
 	for i, cell := range cells {
 		t := cellTime(req.DepartureTime.Time, arrivalTime, i, len(cells))
 		if err := incrementCapacity(ctx, tx, cell.lat, cell.lng, t); err != nil {
+			if errors.Is(err, ErrCapacityExceeded) {
+				ct := "ROAD_CAPACITY"
+				details := fmt.Sprintf("Road at capacity: concurrent vehicle booked around %s.", t.Format("15:04 02-Jan"))
+				return HoldConflictResponse{
+					JourneyID:       req.JourneyID,
+					IsConflict:      true,
+					ConflictType:    &ct,
+					ConflictDetails: &details,
+					Status:          "CONFLICT",
+					CheckedAt:       time.Now().UTC(),
+				}, nil
+			}
 			return HoldConflictResponse{}, err
 		}
 	}
