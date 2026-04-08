@@ -28,30 +28,30 @@ func (ft *FlexTime) UnmarshalJSON(b []byte) error {
 }
 
 const (
-	gridResolution       = 0.01 // ~1km in lat/lng
+	gridResolution       = 0.01 // ~1km in lat/lng degrees
 	capacitySlotMinutes  = 30
-	defaultMaxCapacity   = 100
+	defaultMaxCapacity   = 1 // single-lane road: only one vehicle per cell per time slot
 	journeyBufferMinutes = 5
 )
 
 type ConflictCheckRequest struct {
-	JourneyID                string    `json:"journey_id"`
-	UserID                   string    `json:"user_id"`
-	OriginLat                float64   `json:"origin_lat"`
-	OriginLng                float64   `json:"origin_lng"`
-	DestinationLat           float64   `json:"destination_lat"`
-	DestinationLng           float64   `json:"destination_lng"`
-	DepartureTime            FlexTime  `json:"departure_time"`
-	EstimatedDurationMinutes int       `json:"estimated_duration_minutes"`
-	VehicleRegistration      string    `json:"vehicle_registration"`
+	JourneyID                string   `json:"journey_id"`
+	UserID                   string   `json:"user_id"`
+	OriginLat                float64  `json:"origin_lat"`
+	OriginLng                float64  `json:"origin_lng"`
+	DestinationLat           float64  `json:"destination_lat"`
+	DestinationLng           float64  `json:"destination_lng"`
+	DepartureTime            FlexTime `json:"departure_time"`
+	EstimatedDurationMinutes int      `json:"estimated_duration_minutes"`
+	VehicleRegistration      string   `json:"vehicle_registration"`
 }
 
 type ConflictCheckResponse struct {
-	JourneyID       string     `json:"journey_id"`
-	IsConflict      bool       `json:"is_conflict"`
-	ConflictType    *string    `json:"conflict_type,omitempty"`
-	ConflictDetails *string    `json:"conflict_details,omitempty"`
-	CheckedAt       time.Time  `json:"checked_at"`
+	JourneyID       string    `json:"journey_id"`
+	IsConflict      bool      `json:"is_conflict"`
+	ConflictType    *string   `json:"conflict_type,omitempty"`
+	ConflictDetails *string   `json:"conflict_details,omitempty"`
+	CheckedAt       time.Time `json:"checked_at"`
 }
 
 func checkConflicts(ctx context.Context, req ConflictCheckRequest) (ConflictCheckResponse, error) {
@@ -106,7 +106,7 @@ func checkConflicts(ctx context.Context, req ConflictCheckRequest) (ConflictChec
 		}, nil
 	}
 
-	// Check 3: road capacity (uses SELECT FOR UPDATE to lock affected rows)
+	// Check 3: road capacity along the full path (SELECT FOR UPDATE on every cell)
 	if details, err := checkRoadCapacity(ctx, tx, req, arrivalTime); err != nil {
 		return ConflictCheckResponse{}, err
 	} else if details != "" {
@@ -130,7 +130,7 @@ func checkConflicts(ctx context.Context, req ConflictCheckRequest) (ConflictChec
 	}
 
 	return ConflictCheckResponse{
-		JourneyID:  req.JourneyID,
+		JourneyID: req.JourneyID,
 		IsConflict: false,
 		CheckedAt:  time.Now().UTC(),
 	}, nil
@@ -185,53 +185,112 @@ func checkVehicleOverlap(ctx context.Context, tx pgx.Tx, vehicleReg string, depa
 	return &s, nil
 }
 
-// checkRoadCapacity checks grid capacity and locks the row (SELECT FOR UPDATE) to
-// prevent concurrent bookings from both passing when capacity is nearly full.
+// gridCell is a ~1km road segment identified by its snapped lat/lng coordinates.
+type gridCell struct {
+	lat float64
+	lng float64
+}
+
+// pathGridCells returns every ~1km grid cell that the straight-line path from
+// (originLat, originLng) to (destLat, destLng) passes through, in order.
+//
+// Algorithm: walk the line in steps of gridResolution. The number of steps is
+// max(|ΔLat|, |ΔLng|) / gridResolution, which guarantees we never skip a cell
+// even on steep diagonals. Duplicate cells (when the line hugs a cell boundary)
+// are removed.
+//
+// Example — A(0,0) → D(0, 0.05):
+//
+//	cells = [(0,0.00), (0,0.01), (0,0.02), (0,0.03), (0,0.04), (0,0.05)]
+//
+// A booking for B(0,0.01)→C(0,0.03) would produce cells [(0,0.01),(0,0.02),(0,0.03)],
+// which all overlap with the A→D booking → conflict detected.
+func pathGridCells(originLat, originLng, destLat, destLng float64) []gridCell {
+	deltaLat := destLat - originLat
+	deltaLng := destLng - originLng
+
+	// How many grid units does this path span in each axis?
+	stepsLat := math.Abs(deltaLat) / gridResolution
+	stepsLng := math.Abs(deltaLng) / gridResolution
+
+	// Use the longer axis so we never skip a cell.
+	steps := int(math.Ceil(math.Max(stepsLat, stepsLng)))
+	if steps == 0 {
+		steps = 1 // origin == destination: single cell
+	}
+
+	seen := make(map[gridCell]bool)
+	cells := make([]gridCell, 0, steps+1)
+
+	for i := 0; i <= steps; i++ {
+		frac := float64(i) / float64(steps)
+		cell := gridCell{
+			lat: roundGrid(originLat + frac*deltaLat),
+			lng: roundGrid(originLng + frac*deltaLng),
+		}
+		if !seen[cell] {
+			seen[cell] = true
+			cells = append(cells, cell)
+		}
+	}
+	return cells
+}
+
+// cellTime returns the interpolated timestamp at which a vehicle reaches cell i
+// of n total cells, given departure and arrival times.
+//
+// i=0 → departure, i=n-1 → arrival, i=k → departure + k/(n-1) * duration.
+// This lets the capacity check use the correct time slot for each segment.
+func cellTime(departure, arrival time.Time, i, n int) time.Time {
+	if n <= 1 {
+		return departure
+	}
+	frac := float64(i) / float64(n-1)
+	duration := arrival.Sub(departure)
+	return departure.Add(time.Duration(float64(duration) * frac))
+}
+
+// checkRoadCapacity checks every grid cell along the straight-line path for
+// capacity violations, locking each row with SELECT FOR UPDATE so that
+// concurrent bookings cannot both pass the same full cell.
+//
+// Old behaviour: checked only origin cell (at departure) and destination cell
+// (at arrival). A→D and B→C never conflicted even when B and C lay on the route.
+//
+// New behaviour: iterates all ~1km cells between origin and destination. Each
+// cell is checked at its interpolated time. A→D will lock cells covering B and C,
+// so a B→C booking that arrives during the same time window is rejected.
 func checkRoadCapacity(ctx context.Context, tx pgx.Tx, req ConflictCheckRequest, arrivalTime time.Time) (string, error) {
-	originGridLat := roundGrid(req.OriginLat)
-	originGridLng := roundGrid(req.OriginLng)
+	cells := pathGridCells(req.OriginLat, req.OriginLng, req.DestinationLat, req.DestinationLng)
 
-	var count int
-	err := tx.QueryRow(ctx, `
-		SELECT COUNT(*) FROM road_segment_capacity
-		WHERE grid_lat = $1
-		  AND grid_lng = $2
-		  AND time_slot_start <= $3
-		  AND time_slot_end > $3
-		  AND current_bookings >= max_capacity
-		FOR UPDATE
-	`, originGridLat, originGridLng, req.DepartureTime.Time).Scan(&count)
-	if err != nil {
-		return "", err
-	}
-	if count > 0 {
-		return fmt.Sprintf("Road capacity exceeded at origin area (%.2f, %.2f)", originGridLat, originGridLng), nil
-	}
+	for i, cell := range cells {
+		t := cellTime(req.DepartureTime.Time, arrivalTime, i, len(cells))
 
-	destGridLat := roundGrid(req.DestinationLat)
-	destGridLng := roundGrid(req.DestinationLng)
-
-	err = tx.QueryRow(ctx, `
-		SELECT COUNT(*) FROM road_segment_capacity
-		WHERE grid_lat = $1
-		  AND grid_lng = $2
-		  AND time_slot_start <= $3
-		  AND time_slot_end > $3
-		  AND current_bookings >= max_capacity
-		FOR UPDATE
-	`, destGridLat, destGridLng, arrivalTime).Scan(&count)
-	if err != nil {
-		return "", err
+		var count int
+		err := tx.QueryRow(ctx, `
+			SELECT COUNT(*) FROM road_segment_capacity
+			WHERE grid_lat = $1
+			  AND grid_lng = $2
+			  AND time_slot_start <= $3
+			  AND time_slot_end > $3
+			  AND current_bookings >= max_capacity
+			FOR UPDATE
+		`, cell.lat, cell.lng, t).Scan(&count)
+		if err != nil {
+			return "", err
+		}
+		if count > 0 {
+			return fmt.Sprintf(
+				"Road segment (%.2f, %.2f) is fully booked at %s — segment %d of %d along route",
+				cell.lat, cell.lng, t.Format("15:04 UTC"), i+1, len(cells),
+			), nil
+		}
 	}
-	if count > 0 {
-		return fmt.Sprintf("Road capacity exceeded at destination area (%.2f, %.2f)", destGridLat, destGridLng), nil
-	}
-
 	return "", nil
 }
 
-// recordBookingSlot inserts the booking and increments capacity within the given transaction.
-// The caller is responsible for committing.
+// recordBookingSlot inserts the booking and increments capacity for every grid
+// cell along the path (not just origin and destination).
 func recordBookingSlot(ctx context.Context, tx pgx.Tx, req ConflictCheckRequest, arrivalTime time.Time) error {
 	_, err := tx.Exec(ctx, `
 		INSERT INTO booked_slots
@@ -249,10 +308,14 @@ func recordBookingSlot(ctx context.Context, tx pgx.Tx, req ConflictCheckRequest,
 		return err
 	}
 
-	if err := incrementCapacity(ctx, tx, req.OriginLat, req.OriginLng, req.DepartureTime.Time); err != nil {
-		return err
+	cells := pathGridCells(req.OriginLat, req.OriginLng, req.DestinationLat, req.DestinationLng)
+	for i, cell := range cells {
+		t := cellTime(req.DepartureTime.Time, arrivalTime, i, len(cells))
+		if err := incrementCapacity(ctx, tx, cell.lat, cell.lng, t); err != nil {
+			return err
+		}
 	}
-	return incrementCapacity(ctx, tx, req.DestinationLat, req.DestinationLng, arrivalTime)
+	return nil
 }
 
 func incrementCapacity(ctx context.Context, tx pgx.Tx, lat, lng float64, t time.Time) error {
@@ -275,18 +338,63 @@ func incrementCapacity(ctx context.Context, tx pgx.Tx, lat, lng float64, t time.
 
 var ErrNotFound = errors.New("journey not found")
 
+// cancelBookingSlot marks the booking inactive AND decrements road capacity for
+// every grid cell along the path, so those slots become available again.
+//
+// Previously only set is_active = false — capacity was never freed, meaning
+// cancelled journeys permanently consumed road capacity.
 func cancelBookingSlot(ctx context.Context, journeyID string) error {
-	tag, err := db.Exec(ctx, `
-		UPDATE booked_slots SET is_active = false
-		WHERE journey_id = $1 AND is_active = true
-	`, journeyID)
+	tx, err := db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
-		return ErrNotFound
+	defer tx.Rollback(ctx)
+
+	// Deactivate and retrieve path endpoints in one statement.
+	var originLat, originLng, destLat, destLng float64
+	var departureTime, arrivalTime time.Time
+	err = tx.QueryRow(ctx, `
+		UPDATE booked_slots
+		SET is_active = false
+		WHERE journey_id = $1 AND is_active = true
+		RETURNING origin_lat, origin_lng, destination_lat, destination_lng,
+		          departure_time, arrival_time
+	`, journeyID).Scan(
+		&originLat, &originLng, &destLat, &destLng,
+		&departureTime, &arrivalTime,
+	)
+	if err != nil {
+		if isNoRows(err) {
+			return ErrNotFound
+		}
+		return err
 	}
-	return nil
+
+	// Free capacity on every cell along the cancelled journey's path.
+	cells := pathGridCells(originLat, originLng, destLat, destLng)
+	for i, cell := range cells {
+		t := cellTime(departureTime, arrivalTime, i, len(cells))
+		if err := decrementCapacity(ctx, tx, cell.lat, cell.lng, t); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
+func decrementCapacity(ctx context.Context, tx pgx.Tx, lat, lng float64, t time.Time) error {
+	gridLat := roundGrid(lat)
+	gridLng := roundGrid(lng)
+
+	minutes := (t.Minute() / capacitySlotMinutes) * capacitySlotMinutes
+	slotStart := time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), minutes, 0, 0, time.UTC)
+
+	_, err := tx.Exec(ctx, `
+		UPDATE road_segment_capacity
+		SET current_bookings = GREATEST(0, current_bookings - 1)
+		WHERE grid_lat = $1 AND grid_lng = $2 AND time_slot_start = $3
+	`, gridLat, gridLng, slotStart)
+	return err
 }
 
 func roundGrid(v float64) float64 {
