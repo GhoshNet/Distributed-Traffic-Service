@@ -34,6 +34,10 @@ partition_mgr = PartitionManager("journey-service")
 # Global peer health monitor (Archive-style ALIVE/SUSPECT/DEAD)
 health_monitor = PeerHealthMonitor("journey-service")
 
+# Node failure simulation flag — mirrors Archive's state.failure_simulated
+# When True: /health returns 503 so peers detect this node as DEAD
+_node_failed = False
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -117,8 +121,11 @@ app.add_middleware(
 app.include_router(router)
 
 
-@app.get("/health", response_model=HealthResponse)
+@app.get("/health")
 async def health_check():
+    from fastapi import HTTPException
+    if _node_failed:
+        raise HTTPException(status_code=503, detail="Node is in simulated failure state")
     return HealthResponse(
         status="healthy",
         service="journey-service",
@@ -139,6 +146,47 @@ async def node_health():
     Surfaces the health monitor state for the frontend dashboard.
     """
     return health_monitor.get_status()
+
+
+@app.post("/admin/simulate/fail")
+async def simulate_node_fail():
+    """
+    Simulate a node crash — mirrors Archive's simulate_node_failure().
+    Makes /health return 503 so peer health monitors on other nodes
+    will transition this node through ALIVE → SUSPECT → DEAD.
+    New booking requests are rejected while failed.
+    """
+    global _node_failed
+    _node_failed = True
+    logger.error("[SIMULATION] Node failure simulated — /health now returns 503")
+    return {"status": "failed", "message": "Node is now simulating a crash. Peers will detect SUSPECT in ~30s, DEAD in ~60s."}
+
+
+@app.post("/admin/simulate/recover")
+async def simulate_node_recover():
+    """
+    Recover from simulated failure — mirrors Archive's simulate_node_recovery().
+    Restores /health to 200 so peers transition back to ALIVE.
+    """
+    global _node_failed
+    _node_failed = False
+    logger.info("[SIMULATION] Node recovery — /health restored to 200")
+    return {"status": "recovered", "message": "Node recovered. Peers will detect ALIVE on next heartbeat (~10s)."}
+
+
+@app.get("/admin/simulate/status")
+async def simulate_status():
+    """Return current simulation state of this node."""
+    peers = health_monitor.get_status()
+    alive = sum(1 for p in peers["peers"].values() if p["status"] == "ALIVE")
+    total = len(peers["peers"])
+    return {
+        "node_failed": _node_failed,
+        "local_only_mode": peers["local_only_mode"],
+        "alive_peers": alive,
+        "total_peers": total,
+        "peers": peers["peers"],
+    }
 
 
 @app.post("/admin/peers/register")

@@ -106,14 +106,16 @@ function go(view) {
   document.getElementById(`view-${view}`).classList.add('active');
   document.getElementById(`nav-${view}`).classList.add('active');
 
-  // BUG FIX 2: Load journeys on map view too so markers appear
+  // Stop health polling when leaving simulate/dash
+  if (view !== 'simulate' && view !== 'dash') stopNodeHealthPolling();
+
   if(view === 'map') {
     setTimeout(() => mapInstance.invalidateSize(), 300);
     loadJourneys();
   }
-  if(view === 'dash') loadDashboard();
+  if(view === 'dash') { loadDashboard(); startNodeHealthPolling(); }
   if(view === 'journeys') { loadJourneys(); loadVehicles(); }
-  if(view === 'simulate') { loadSimStats(); loadNodeHealth(); }
+  if(view === 'simulate') startNodeHealthPolling();
 }
 
 function initMap() {
@@ -605,32 +607,62 @@ function applyQuickRoute() {
 
 // =============================================
 // Node Health — Archive ALIVE/SUSPECT/DEAD model
+// Auto-refreshes every 10 s while the view is visible
 // =============================================
+
+let _nodeHealthTimer = null;
+
+function startNodeHealthPolling() {
+    stopNodeHealthPolling();
+    loadNodeHealth();
+    loadSimStats();
+    _nodeHealthTimer = setInterval(() => { loadNodeHealth(); loadSimStats(); }, 10000);
+}
+
+function stopNodeHealthPolling() {
+    if (_nodeHealthTimer) { clearInterval(_nodeHealthTimer); _nodeHealthTimer = null; }
+}
 
 async function loadNodeHealth() {
     try {
         const r = await authFetch('/health/nodes');
         if (!r.ok) return;
         const data = await r.json();
+        const peers = data.peers || {};
+        const total = Object.keys(peers).length;
+        const alive = Object.values(peers).filter(p => p.status === 'ALIVE').length;
 
-        // Badge
+        // LOCAL ONLY badge
         const badge = document.getElementById('local-only-badge');
         if (badge) badge.style.display = data.local_only_mode ? 'inline-block' : 'none';
 
-        // Render into both dash and simulate views
+        // Peer count label
+        const countLabel = document.getElementById('dash-node-count');
+        if (countLabel) countLabel.textContent = `${alive}/${total} alive`;
+
+        const simCount = document.getElementById('sim-node-count');
+        if (simCount) simCount.textContent = `${alive}/${total} alive`;
+
+        // Render peer cards into both dash and simulate grids
+        const html = Object.entries(peers).map(([name, info]) => {
+            const colors = {ALIVE: '#06d6a0', SUSPECT: '#ffbe0b', DEAD: '#e63946'};
+            const c = colors[info.status] || '#888';
+            const lastSeen = info.last_seen_s_ago < 60
+                ? `${info.last_seen_s_ago}s ago`
+                : `${Math.round(info.last_seen_s_ago/60)}m ago`;
+            return `<div style="background:var(--card-bg);border:2px solid ${c};border-radius:8px;padding:12px">
+                <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;word-break:break-all">${name}</div>
+                <div style="font-weight:700;color:${c};font-size:15px;margin-bottom:4px">${info.status}</div>
+                <div style="font-size:11px;color:var(--text-muted)">seen ${lastSeen}</div>
+                ${info.consecutive_failures > 0
+                    ? `<div style="font-size:11px;color:var(--danger);margin-top:2px">${info.consecutive_failures} missed ping${info.consecutive_failures>1?'s':''}</div>`
+                    : ''}
+            </div>`;
+        }).join('') || '<div style="color:var(--text-muted);font-size:13px">No peers registered yet.</div>';
+
         ['node-health-grid', 'sim-node-health-grid'].forEach(id => {
-            const grid = document.getElementById(id);
-            if (!grid) return;
-            const peers = data.peers || {};
-            grid.innerHTML = Object.entries(peers).map(([name, info]) => {
-                const colors = {ALIVE: '#06d6a0', SUSPECT: '#ffbe0b', DEAD: '#e63946'};
-                const bg = colors[info.status] || '#888';
-                return `<div style="background:var(--card-bg);border:2px solid ${bg};border-radius:8px;padding:10px;text-align:center">
-                    <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">${name}</div>
-                    <div style="font-weight:700;color:${bg};font-size:14px">${info.status}</div>
-                    <div style="font-size:10px;color:var(--text-muted);margin-top:2px">${info.consecutive_failures} fails</div>
-                </div>`;
-            }).join('');
+            const el = document.getElementById(id);
+            if (el) el.innerHTML = html;
         });
     } catch(err) {
         console.warn('Node health fetch failed:', err);
@@ -638,20 +670,40 @@ async function loadNodeHealth() {
 }
 
 // =============================================
-// Simulation panel — browser-side demos
+// Simulation stats bar
 // =============================================
 
 async function loadSimStats() {
     try {
-        const r = await authFetch('/health/nodes');
-        if (!r.ok) return;
+        const r = await authFetch('/admin/simulate/status');
         const data = r.ok ? await r.json() : {};
         const peers = Object.values(data.peers || {});
-        document.getElementById('sim-alive').innerText = peers.filter(p => p.status === 'ALIVE').length;
-        document.getElementById('sim-suspect').innerText = peers.filter(p => p.status === 'SUSPECT').length;
-        document.getElementById('sim-dead').innerText = peers.filter(p => p.status === 'DEAD').length;
-        document.getElementById('sim-mode').innerText = data.local_only_mode ? '🔴 LOCAL' : '🟢 GLOBAL';
-    } catch(e) { console.warn(e); }
+        const alive = peers.filter(p => p.status === 'ALIVE').length;
+        const suspect = peers.filter(p => p.status === 'SUSPECT').length;
+        const dead = peers.filter(p => p.status === 'DEAD').length;
+
+        const selfEl = document.getElementById('sim-self-status');
+        if (selfEl) selfEl.innerHTML = data.node_failed
+            ? '<span style="color:var(--danger)">💀 FAILED</span>'
+            : '<span style="color:var(--success)">🟢 ALIVE</span>';
+
+        const aliveEl = document.getElementById('sim-alive');
+        if (aliveEl) aliveEl.textContent = alive;
+
+        const sdEl = document.getElementById('sim-suspect-dead');
+        if (sdEl) sdEl.textContent = `${suspect} / ${dead}`;
+
+        const modeEl = document.getElementById('sim-mode');
+        if (modeEl) modeEl.innerHTML = data.local_only_mode
+            ? '<span style="color:var(--danger)">🔴 LOCAL</span>'
+            : '<span style="color:var(--success)">🌐 GLOBAL</span>';
+
+        // Keep kill/recover buttons reflecting current state
+        const killBtn = document.getElementById('btn-kill-node');
+        const recBtn = document.getElementById('btn-recover-node');
+        if (killBtn) killBtn.disabled = !!data.node_failed;
+        if (recBtn) recBtn.disabled = !data.node_failed;
+    } catch(e) { console.warn('loadSimStats:', e); }
 }
 
 function simLog(msg, type = 'info') {
@@ -745,6 +797,51 @@ async function simDemo(type) {
 
     await loadSimStats();
     await loadNodeHealth();
+}
+
+// =============================================
+// Node failure simulation (Archive simulate_node_failure / simulate_node_recovery)
+// =============================================
+
+async function simKillNode() {
+    simLog('Sending KILL signal to this node…', 'warn');
+    try {
+        const r = await authFetch('/admin/simulate/fail', {method: 'POST'});
+        const d = await r.json();
+        simLog(`💀 ${d.message}`, 'error');
+        showToast('Node failure simulated — peers will detect SUSPECT in ~30s', 'error');
+        await loadSimStats(); await loadNodeHealth();
+    } catch(e) { simLog(`Error: ${e}`, 'error'); }
+}
+
+async function simRecoverNode() {
+    simLog('Sending RECOVER signal to this node…', 'info');
+    try {
+        const r = await authFetch('/admin/simulate/recover', {method: 'POST'});
+        const d = await r.json();
+        simLog(`💚 ${d.message}`, 'success');
+        showToast('Node recovered — peers will detect ALIVE on next heartbeat', 'success');
+        await loadSimStats(); await loadNodeHealth();
+    } catch(e) { simLog(`Error: ${e}`, 'error'); }
+}
+
+async function simRegisterPeer() {
+    const name = document.getElementById('peer-name').value.trim();
+    const url = document.getElementById('peer-url').value.trim();
+    if (!name || !url) { showToast('Enter both name and health URL', 'error'); return; }
+    try {
+        const r = await authFetch('/admin/peers/register', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name, health_url: url})
+        });
+        const d = await r.json();
+        simLog(`Registered peer '${d.registered}' → ${d.health_url}`, 'success');
+        simLog(`  ${d.note}`, 'info');
+        showToast(`Peer '${name}' added`, 'success');
+        document.getElementById('peer-name').value = '';
+        document.getElementById('peer-url').value = '';
+        await loadNodeHealth();
+    } catch(e) { simLog(`Error registering peer: ${e}`, 'error'); }
 }
 
 async function simDrainOutbox() {

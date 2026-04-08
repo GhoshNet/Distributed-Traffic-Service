@@ -15,10 +15,9 @@
 5. [Infrastructure](#5-infrastructure)
 6. [Deployment](#6-deployment)
 7. [Local & Multi-Device Testing](#7-local--multi-device-testing)
-8. [Bugs Fixed & Improvements Made](#8-bugs-fixed--improvements-made)
-9. [Remaining Gaps](#9-remaining-gaps)
-10. [Demo Script](#10-demo-script)
-11. [API Reference](#11-api-reference)
+8. [Remaining Gaps](#8-remaining-gaps)
+9. [Demo Script](#9-demo-script)
+10. [API Reference](#10-api-reference)
 
 ---
 
@@ -513,98 +512,7 @@ Each confirmed journey earns the driver points (based on distance / duration). P
 
 ---
 
-## 8. Bugs Fixed & Improvements Made
-
-
-This section documents every concrete problem found and resolved during development and testing.
-
-### Infrastructure Fixes
-
-#### Redis Sentinel — `$REDIS_IP` Docker Compose variable interpolation bug
-**Problem:** Sentinel containers were stuck in an infinite loop printing `Waiting for redis DNS...` even though DNS resolved correctly. The actual sentinel process never started.
-
-**Root cause:** Docker Compose treats `$VAR` in YAML as a Compose environment variable and substitutes it before passing to the shell. `$REDIS_IP` was being replaced with an empty string, making the `until` loop condition always false. The `docker compose ps` warning `"REDIS_IP" variable is not set. Defaulting to a blank string.` was the tell.
-
-**Fix:** Escaped all shell variables in sentinel commands with `$$` (double dollar) so Docker Compose passes them through literally to the shell:
-```yaml
-# Before (broken)
-until REDIS_IP=$(getent hosts redis | awk '{print $1; exit}') && [ -n "$REDIS_IP" ]; do
-
-# After (fixed)
-until REDIS_IP=$$(getent hosts redis | awk '{print $$1; exit}') && [ -n "$$REDIS_IP" ]; do
-```
-
-#### Postgres Replicas — permission and root execution errors
-**Problem:** All 4 replica containers failed with two errors in sequence:
-1. `data directory has invalid permissions — Permissions should be u=rwx (0700)`
-2. `"root" execution of the PostgreSQL server is not permitted`
-
-**Fix:** Added `chown -R postgres:postgres`, `chmod 700`, and `exec gosu postgres postgres` to all 4 replica entrypoints in `docker-compose.yml`.
-
-#### Postgres Replicas — replication connection denied
-**Problem:** After fixing permissions, replicas failed with `FATAL: no pg_hba.conf entry for replication connection`.
-
-**Fix:** Created `postgres-init/01_allow_replication.sh` that appends `host replication all all md5` to `pg_hba.conf`. Mounted to `/docker-entrypoint-initdb.d/` on all 4 primary containers so it runs on first initialisation.
-
-#### Redis DB mismatch — enforcement cache never hit
-**Problem:** Enforcement service was reading from Redis DB 4 but journey-service was writing active journeys to DB 1. Cache lookups always missed.
-
-**Fix:** Aligned both services to Redis DB 1 for enforcement cache keys.
-
----
-
-### Correctness Fixes
-
-#### Conflict Service — double-booking race condition
-**Problem:** The capacity check (read) and slot reservation (write) were two separate DB operations. Two concurrent booking requests could both pass the capacity check before either incremented the counter — both got confirmed even if one exceeded road capacity.
-
-**Fix:** Wrapped the entire `checkConflicts` function in a single `SERIALIZABLE` transaction. All three sub-checks (`checkDriverOverlap`, `checkVehicleOverlap`, `checkRoadCapacity`) run inside the transaction with `SELECT FOR UPDATE`. Postgres serializes concurrent transactions — the second one either waits or gets a serialization error (returned as a clean rejection).
-
-#### Conflict Consumer — needless DLQ routing on duplicate cancel
-**Problem:** If RabbitMQ redelivered a `journey.cancelled` message (at-least-once delivery), the second call to `cancelBookingSlot` returned `ErrNotFound` (slot already inactive). This caused a `Nack`, routing the message to the DLQ unnecessarily.
-
-**Fix:** Added `errors.Is(err, ErrNotFound)` check — treat already-cancelled as success, log, and ack cleanly.
-
-#### Analytics & Notification — event double-counting on redelivery
-**Problem:** RabbitMQ guarantees at-least-once delivery. On consumer restart, inflight messages are redelivered. Analytics would double-count events; notification would push duplicate messages to users.
-
-**Fix:** Before processing each message, check `Redis SETNX {service}:processed:{MessageId}` with a 24-hour TTL. If already processed, ack and skip. Uses SHA-256 hash of message body as fallback key if `MessageId` is not set by the publisher.
-
-#### Enforcement — synchronous user-service call on every licence check
-**Problem:** Every call to `GET /api/enforcement/verify/license/{number}` made a synchronous HTTP call to user-service to resolve `license_number → user_id`. Under load this is a bottleneck and creates unnecessary coupling.
-
-**Fix:** Cache the `license_user_id:{license}` key in Redis with a 24-hour TTL. Subsequent calls for the same licence skip the user-service call entirely.
-
----
-
-### Missing Features Added
-
-#### User Service — `user.registered` event
-**Problem:** User service was the only service that never published any event to RabbitMQ. Every other service participated in the event bus; user service was a silent writer.
-
-**Fix:** After successful registration, publish `user.registered` with `user_id`, `email`, `full_name`, `license_number`, `registered_at` fields. Published best-effort — if the broker is down, registration still completes and a warning is logged.
-
-#### Analytics — hourly_stats rollup
-**Problem:** The `hourly_stats` table existed in the DB schema but was never written to. The rollup story was entirely missing.
-
-**Fix:** Added `runHourlyRollup()` goroutine that fires on startup (backfills the previous completed hour) and then every hour. Aggregates `event_logs` into `hourly_stats` using `ON CONFLICT (hour) DO UPDATE`. Exposed at `GET /api/analytics/hourly`.
-
-#### Analytics — replica lag endpoint
-**Problem:** Postgres streaming replication was configured and running, but there was no way to observe it from outside the containers.
-
-**Fix:** Added `GET /api/analytics/replica-lag` which queries `pg_stat_replication` on the analytics primary and returns `write_lag`, `flush_lag`, and `replay_lag` per connected replica.
-
-#### Redis Sentinel wiring
-**Problem:** Sentinel was running (after the `$$REDIS_IP` fix) but all services connected directly to `redis:6379`. If the primary failed and Sentinel promoted the replica, services would keep writing to the old (now demoted) primary.
-
-**Fix:**
-- Added `REDIS_SENTINEL_ADDRS` and `REDIS_MASTER_NAME` env vars to all 6 services in `docker-compose.yml`
-- Python services (enforcement, journey, user): use `redis.asyncio.sentinel.AsyncSentinel` — automatically tracks which node is current primary
-- Go services (analytics, notification): use `redis.NewFailoverClient` with `FailoverOptions` — same behaviour in Go
-
----
-
-## 9. Remaining Gaps
+## 8. Remaining Gaps
 
 These are known limitations that do not affect the demo but are documented for completeness.
 
@@ -620,7 +528,7 @@ These are known limitations that do not affect the demo but are documented for c
 
 ---
 
-## 10. Demo Script
+## 9. Demo Script
 
 Two ways to run the demo:
 
@@ -750,7 +658,7 @@ docker compose logs journey-service | grep -i "MERGING\|CONNECTED"
 
 ---
 
-## 11. API Reference
+## 10. API Reference
 
 Direct service ports (no gateway). In Docker, prefix with gateway at `:8080` where nginx routing is configured.
 

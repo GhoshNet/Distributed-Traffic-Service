@@ -22,6 +22,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/journeys", tags=["Journeys"])
 
 
+def _check_node_not_failed():
+    """Raise 503 if this node is in simulated failure mode."""
+    from . import main as _main  # noqa: PLC0415
+    if getattr(_main, "_node_failed", False):
+        raise HTTPException(status_code=503, detail="Node is in simulated failure — bookings rejected")
+
+
 @router.post(
     "/",
     response_model=JourneyResponse,
@@ -44,6 +51,7 @@ async def create_journey(
     instead of the default Saga pattern. Both paths check road capacity via the
     Conflict Service; 2PC adds explicit compensating cancellation on commit failure.
     """
+    _check_node_not_failed()
     try:
         return await JourneyService.create_journey(
             db, current_user["user_id"], request, use_2pc=(mode == "2pc")
