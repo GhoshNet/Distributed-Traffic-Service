@@ -36,12 +36,15 @@ services:
   analytics-service:
     environment:
       REDIS_SENTINEL_ADDRS: ""
+      DATABASE_READ_URL: ""
   user-service:
     environment:
       REDIS_SENTINEL_ADDRS: ""
+      DATABASE_READ_URL: ""
   journey-service:
     environment:
       REDIS_SENTINEL_ADDRS: ""
+      DATABASE_READ_URL: ""
   conflict-service:
     environment:
       REDIS_SENTINEL_ADDRS: ""

@@ -59,6 +59,7 @@ class UserService:
                     password_hash=pwd_context.hash(request.password),
                     full_name=request.full_name,
                     license_number=request.license_number,
+                    role=request.role.value if hasattr(request, "role") and request.role else "DRIVER",
                 )
                 db.add(user)
                 # Transaction commits here on successful exit; rolls back on any exception
