@@ -65,6 +65,40 @@ func cancelBookingSlotHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// activeSlotsHandler returns all currently active booking slots so that peers
+// can pull a full state snapshot on startup or after rejoining.
+func activeSlotsHandler(w http.ResponseWriter, r *http.Request) {
+	slots, err := getActiveSlots(r.Context())
+	if err != nil {
+		log.Printf("[sync] getActiveSlots: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"slots": slots,
+		"count": len(slots),
+	})
+}
+
+// addPeerHandler registers a new peer conflict-service URL at runtime and
+// immediately triggers a catch-up sync from it.
+// Body: {"peer_url": "http://172.20.10.12:8003"}
+func addPeerHandler(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		PeerURL string `json:"peer_url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.PeerURL == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "peer_url required"})
+		return
+	}
+	addPeer(body.PeerURL)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"registered": body.PeerURL,
+		"peers":      getPeers(),
+		"note":       "Catch-up sync started in background",
+	})
+}
+
 // replicateSlotHandler receives a booking slot from a peer node and applies it
 // to the local DB. Does NOT forward to other peers (loop prevention).
 func replicateSlotHandler(w http.ResponseWriter, r *http.Request) {

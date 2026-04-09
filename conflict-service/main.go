@@ -28,6 +28,20 @@ func main() {
 	}
 	log.Println("Database tables created/verified")
 
+	// Startup catch-up sync: pull all active slots from every known peer.
+	// Handles both fresh-start (empty DB) and rejoin-after-downtime (gap filling).
+	for _, peer := range peerConflictURLs {
+		peer := peer
+		go func() {
+			time.Sleep(3 * time.Second) // wait for own DB to be fully ready
+			syncFromPeer(peer)
+		}()
+	}
+
+	// Periodic re-sync every 5 minutes — fills any gap caused by missed pushes
+	// while this node was temporarily unreachable.
+	startPeriodicSync(5 * time.Minute)
+
 	if err := startConsumer(cfg.RabbitMQURL); err != nil {
 		log.Printf("Warning: could not connect to RabbitMQ: %v", err)
 	} else {
@@ -46,8 +60,10 @@ func main() {
 	r.Post("/api/conflicts/check", checkConflictsHandler)
 	r.Post("/api/conflicts/cancel/{journey_id}", cancelBookingSlotHandler)
 	// Internal replication endpoints — called by peer conflict services only.
-	r.Post("/internal/slots/replicate", replicateSlotHandler)
-	r.Post("/internal/slots/cancel", replicateCancelHandler)
+	r.Get("/internal/slots/active", activeSlotsHandler)      // pull full state snapshot
+	r.Post("/internal/slots/replicate", replicateSlotHandler) // push a single new slot
+	r.Post("/internal/slots/cancel", replicateCancelHandler)  // push a cancellation
+	r.Post("/internal/peers/register", addPeerHandler)        // add peer at runtime
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.Port,
