@@ -48,3 +48,6 @@ services:
   conflict-service:
     environment:
       REDIS_SENTINEL_ADDRS: ""
+      # Set PEER_CONFLICT_URLS in your shell (or .env file) before running docker compose.
+      # Example: export PEER_CONFLICT_URLS=http://172.20.10.12:8003
+      PEER_CONFLICT_URLS: "${PEER_CONFLICT_URLS:-}"

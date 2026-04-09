@@ -18,6 +18,11 @@ func main() {
 	log.SetFlags(log.LstdFlags)
 	log.Printf("[%s] starting up...", cfg.ServiceName)
 
+	peerConflictURLs = cfg.PeerConflictURLs
+	if len(peerConflictURLs) > 0 {
+		log.Printf("Cross-node replication enabled — peers: %v", peerConflictURLs)
+	}
+
 	if err := initDB(cfg.DatabaseURL); err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
@@ -40,6 +45,9 @@ func main() {
 	r.Get("/api/conflicts/routes", listRoutesHandler)
 	r.Post("/api/conflicts/check", checkConflictsHandler)
 	r.Post("/api/conflicts/cancel/{journey_id}", cancelBookingSlotHandler)
+	// Internal replication endpoints — called by peer conflict services only.
+	r.Post("/internal/slots/replicate", replicateSlotHandler)
+	r.Post("/internal/slots/cancel", replicateCancelHandler)
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.Port,

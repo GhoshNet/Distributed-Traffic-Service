@@ -132,8 +132,11 @@ func checkConflicts(ctx context.Context, req ConflictCheckRequest) (ConflictChec
 		return ConflictCheckResponse{}, fmt.Errorf("commit conflict check transaction: %w", err)
 	}
 
+	// Replicate the confirmed slot to peer nodes asynchronously (eventual consistency).
+	go replicateSlotToPeers(req, arrivalTime)
+
 	return ConflictCheckResponse{
-		JourneyID: req.JourneyID,
+		JourneyID:  req.JourneyID,
 		IsConflict: false,
 		CheckedAt:  time.Now().UTC(),
 	}, nil

@@ -146,5 +146,7 @@ func handleEvent(body []byte, routingKey string) error {
 		return fmt.Errorf("cancel booking slot %s: %w", journeyID, err)
 	}
 	log.Printf("Processed cancellation for journey %s", journeyID)
+	// Propagate to peer nodes (peers have their own RabbitMQ and won't see this event).
+	go replicateCancelToPeers(journeyID)
 	return nil
 }

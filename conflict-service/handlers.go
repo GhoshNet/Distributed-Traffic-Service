@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status":    "healthy",
@@ -57,6 +58,42 @@ func cancelBookingSlotHandler(w http.ResponseWriter, r *http.Request) {
 			"error":   "internal_error",
 			"message": err.Error(),
 		})
+		return
+	}
+	// Propagate cancellation to peer nodes.
+	go replicateCancelToPeers(journeyID)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// replicateSlotHandler receives a booking slot from a peer node and applies it
+// to the local DB. Does NOT forward to other peers (loop prevention).
+func replicateSlotHandler(w http.ResponseWriter, r *http.Request) {
+	var req ReplicateSlotRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := applyReplicatedSlot(r.Context(), req); err != nil {
+		log.Printf("[replication] apply slot failed: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// replicateCancelHandler receives a cancellation from a peer node and deactivates
+// the slot locally. Does NOT forward to other peers (loop prevention).
+func replicateCancelHandler(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		JourneyID string `json:"journey_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.JourneyID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "journey_id required"})
+		return
+	}
+	if err := cancelBookingSlot(r.Context(), body.JourneyID); err != nil && !errors.Is(err, ErrNotFound) {
+		log.Printf("[replication] apply cancel failed: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
