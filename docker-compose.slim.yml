@@ -36,15 +36,15 @@ services:
   analytics-service:
     environment:
       REDIS_SENTINEL_ADDRS: ""
-      DATABASE_READ_URL: ""
+      DATABASE_READ_URL: "postgresql://analytics_user:analytics_pass@postgres-analytics:5432/analytics_db"
   user-service:
     environment:
       REDIS_SENTINEL_ADDRS: ""
-      DATABASE_READ_URL: ""
+      DATABASE_READ_URL: "postgresql+asyncpg://users_user:users_pass@postgres-users:5432/users_db"
   journey-service:
     environment:
       REDIS_SENTINEL_ADDRS: ""
-      DATABASE_READ_URL: ""
+      DATABASE_READ_URL: "postgresql+asyncpg://journeys_user:journeys_pass@postgres-journeys:5432/journeys_db"
   conflict-service:
     environment:
       REDIS_SENTINEL_ADDRS: ""

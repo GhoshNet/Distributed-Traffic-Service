@@ -1,5 +1,6 @@
-const API = 'http://localhost:8080';
-const WS = 'ws://localhost:8080';
+// Auto-detect host so the frontend works from any device on the network
+const API = window.location.protocol + '//' + window.location.hostname + ':8080';
+const WS  = (window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.hostname + ':8080';
 
 let token = localStorage.getItem('jb_token');
 let user = JSON.parse(localStorage.getItem('jb_user') || 'null');
@@ -302,16 +303,29 @@ async function bookJourney(e) {
 }
 
 function renderJourneyItem(j) {
+    const canCancel = j.status === 'CONFIRMED' || j.status === 'PENDING';
     return `<div class="data-item">
         <div>
             <div style="font-weight:600;font-size:15px;margin-bottom:4px">${j.origin} → ${j.destination}</div>
             <div style="font-size:12px;color:var(--text-muted)">${new Date(j.departure_time).toLocaleString()} | ${j.vehicle_registration} (${j.vehicle_type})</div>
             ${j.rejection_reason ? `<div style="font-size:12px;color:var(--warning);margin-top:4px">Reason: ${j.rejection_reason}</div>` : ''}
         </div>
-        <div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">
             <span class="badge badge-${j.status.toLowerCase()}">${j.status}</span>
+            ${canCancel ? `<button class="btn btn-sm" style="background:var(--danger);color:#fff;padding:2px 8px;font-size:11px" onclick="cancelJourney('${j.id}')">Cancel</button>` : ''}
         </div>
     </div>`;
+}
+
+async function cancelJourney(journeyId) {
+    if (!confirm('Cancel this journey?')) return;
+    try {
+        const r = await authFetch(`/api/journeys/${journeyId}`, { method: 'DELETE' });
+        const d = await r.json();
+        if (!r.ok) throw new Error(parseErrorDetail(d));
+        showToast(`Journey cancelled`, 'success');
+        await loadJourneys();
+    } catch(err) { showToast(err.message, 'error'); }
 }
 
 function appendJourneyToList(j) {
