@@ -1,0 +1,68 @@
+name: enforcement-service
+replicaCount: 2
+
+image:
+  repository: ghcr.io/REPLACE_ME/enforcement-service
+  tag: v1
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8000
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 75
+
+pdb:
+  minAvailable: 1
+
+probes:
+  liveness:
+    path: /health
+    initialDelaySeconds: 30
+  readiness:
+    path: /health
+    initialDelaySeconds: 10
+
+# enforcement-service has no database.
+env:
+  - name: SERVICE_NAME
+    value: enforcement-service
+  - name: REDIS_URL
+    valueFrom:
+      secretKeyRef:
+        name: traffic-secrets
+        key: enforcement-service-redis-url
+  - name: REDIS_SENTINEL_ADDRS
+    valueFrom:
+      configMapKeyRef:
+        name: traffic-config
+        key: REDIS_SENTINEL_ADDRS
+  - name: REDIS_MASTER_NAME
+    valueFrom:
+      configMapKeyRef:
+        name: traffic-config
+        key: REDIS_MASTER_NAME
+  - name: RABBITMQ_URL
+    valueFrom:
+      secretKeyRef:
+        name: traffic-secrets
+        key: rabbitmq-url
+  - name: JOURNEY_SERVICE_URL
+    value: "http://journey-service:8000"
+  - name: JWT_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: traffic-secrets
+        key: jwt-secret

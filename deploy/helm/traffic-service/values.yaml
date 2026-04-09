@@ -1,0 +1,301 @@
+# ==========================================================================
+# Umbrella values for the Distributed Traffic Service
+# --------------------------------------------------------------------------
+# This file wires the 6 app subcharts (Phase 5) to the Bitnami stateful
+# backends (Phase 6). Passwords are defined ONCE in the `_passwords` block
+# and reused everywhere via YAML anchors (`&name` / `*name`) so they stay
+# in sync between the Bitnami chart config and the app-side `traffic-secrets`.
+#
+# Before installing (Phase 7):
+#   1. Replace every REPLACE_ME_* value below — or better, copy to
+#      `secrets.yaml` (gitignored) and pass `-f secrets.yaml` to helm.
+#   2. Replace `ghcr.io/REPLACE_ME` with your real GHCR namespace.
+#   3. Set `ingress.host` to a real DNS name or `<node-ip>.nip.io`.
+# ==========================================================================
+
+# NOTE: do NOT set `global.imageRegistry` here — Bitnami subcharts consume
+# that key and would rewrite every postgres/redis/rabbitmq image to point
+# at your GHCR namespace, breaking the pulls. App images are configured
+# per-subchart below under `<service>.image.repository`.
+
+# --------------------------------------------------------------------------
+# Shared credentials — the SINGLE source of truth.
+# All other references below use YAML anchors (`*name`) pointing here.
+# --------------------------------------------------------------------------
+_passwords:
+  usersDb:          &usersDbPass          "REPLACE_ME_users_db"
+  usersDbRepmgr:    &usersDbRepmgrPass    "REPLACE_ME_users_repmgr"
+  usersDbAdmin:     &usersDbAdminPass     "REPLACE_ME_users_admin"
+
+  journeysDb:       &journeysDbPass       "REPLACE_ME_journeys_db"
+  journeysDbRepmgr: &journeysDbRepmgrPass "REPLACE_ME_journeys_repmgr"
+  journeysDbAdmin:  &journeysDbAdminPass  "REPLACE_ME_journeys_admin"
+
+  conflictsDb:      &conflictsDbPass      "REPLACE_ME_conflicts_db"
+  conflictsDbAdmin: &conflictsDbAdminPass "REPLACE_ME_conflicts_admin"
+
+  analyticsDb:      &analyticsDbPass      "REPLACE_ME_analytics_db"
+  analyticsDbAdmin: &analyticsDbAdminPass "REPLACE_ME_analytics_admin"
+
+  rabbitmq:         &rabbitmqPass         "REPLACE_ME_rabbitmq"
+  rabbitmqCookie:   &rabbitmqCookie       "REPLACE_ME_erlang_cookie_32_plus_chars_xxxxxxxxx"
+
+  redis:            &redisPass            "REPLACE_ME_redis"
+
+# --------------------------------------------------------------------------
+# App-side secret values. The `secret.yaml` template composes the full
+# DB / Redis / RabbitMQ URLs from these at render time.
+# --------------------------------------------------------------------------
+secrets:
+  jwtSecret:       "REPLACE_ME_jwt_secret"
+  auditHmacSecret: "REPLACE_ME_audit_hmac_secret"
+
+  rabbitmqUsername: journey_admin
+  rabbitmqPassword: *rabbitmqPass
+  rabbitmqVhost:    journey_vhost
+
+  redisPassword: *redisPass
+
+  databases:
+    users:
+      username: users_user
+      password: *usersDbPass
+      database: users_db
+      host: postgres-users-pgpool
+      # HA pgpool also serves reads — point the "read" URL at the same svc
+      # for now; in Phase 8 you can add a replica-only service if needed.
+      readHost: postgres-users-pgpool
+    journeys:
+      username: journeys_user
+      password: *journeysDbPass
+      database: journeys_db
+      host: postgres-journeys-pgpool
+      readHost: postgres-journeys-pgpool
+    conflicts:
+      username: conflicts_user
+      password: *conflictsDbPass
+      database: conflicts_db
+      host: postgres-conflicts
+      readHost: postgres-conflicts
+    analytics:
+      username: analytics_user
+      password: *analyticsDbPass
+      database: analytics_db
+      host: postgres-analytics
+      readHost: postgres-analytics
+
+# --------------------------------------------------------------------------
+# Shared ConfigMap (non-secret runtime config)
+# --------------------------------------------------------------------------
+config:
+  redisSentinelAddrs: "redis-node-0.redis-headless:26379,redis-node-1.redis-headless:26379,redis-node-2.redis-headless:26379"
+  redisMasterName: "mymaster"
+  servicesBaseUrl: "k8s"
+
+# --------------------------------------------------------------------------
+# Ingress
+# --------------------------------------------------------------------------
+ingress:
+  enabled: true
+  className: nginx
+  host: traffic.local
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+
+# ==========================================================================
+# Per-subchart overrides (app side)
+# ==========================================================================
+user-service:
+  image:
+    repository: ghcr.io/REPLACE_ME/user-service
+    tag: v1
+
+journey-service:
+  image:
+    repository: ghcr.io/REPLACE_ME/journey-service
+    tag: v1
+
+conflict-service:
+  image:
+    repository: ghcr.io/REPLACE_ME/conflict-service
+    tag: v1
+
+notification-service:
+  image:
+    repository: ghcr.io/REPLACE_ME/notification-service
+    tag: v1
+
+enforcement-service:
+  image:
+    repository: ghcr.io/REPLACE_ME/enforcement-service
+    tag: v1
+
+analytics-service:
+  image:
+    repository: ghcr.io/REPLACE_ME/analytics-service
+    tag: v1
+
+# ==========================================================================
+# Phase 6: Stateful data plane
+# ==========================================================================
+# NOTE: resources are set aggressively tight for the 3x 8 GiB Oracle
+# Ampere A1 nodes. If you have more headroom, bump memory limits.
+
+# --- Postgres HA: users ---------------------------------------------------
+postgres-users:
+  enabled: true
+  fullnameOverride: postgres-users
+  postgresql:
+    replicaCount: 2
+    username: users_user
+    password: *usersDbPass
+    database: users_db
+    repmgrUsername: repmgr
+    repmgrPassword: *usersDbRepmgrPass
+    repmgrDatabase: repmgr
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+  pgpool:
+    replicaCount: 1
+    adminUsername: admin
+    adminPassword: *usersDbAdminPass
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 300m
+        memory: 256Mi
+  persistence:
+    size: 2Gi
+
+# --- Postgres HA: journeys ------------------------------------------------
+postgres-journeys:
+  enabled: true
+  fullnameOverride: postgres-journeys
+  postgresql:
+    replicaCount: 2
+    username: journeys_user
+    password: *journeysDbPass
+    database: journeys_db
+    repmgrUsername: repmgr
+    repmgrPassword: *journeysDbRepmgrPass
+    repmgrDatabase: repmgr
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+  pgpool:
+    replicaCount: 1
+    adminUsername: admin
+    adminPassword: *journeysDbAdminPass
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 300m
+        memory: 256Mi
+  persistence:
+    size: 2Gi
+
+# --- Postgres standalone: conflicts --------------------------------------
+postgres-conflicts:
+  enabled: true
+  fullnameOverride: postgres-conflicts
+  architecture: standalone
+  auth:
+    username: conflicts_user
+    password: *conflictsDbPass
+    database: conflicts_db
+    postgresPassword: *conflictsDbAdminPass
+  primary:
+    persistence:
+      size: 2Gi
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+# --- Postgres standalone: analytics --------------------------------------
+postgres-analytics:
+  enabled: true
+  fullnameOverride: postgres-analytics
+  architecture: standalone
+  auth:
+    username: analytics_user
+    password: *analyticsDbPass
+    database: analytics_db
+    postgresPassword: *analyticsDbAdminPass
+  primary:
+    persistence:
+      size: 2Gi
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+# --- RabbitMQ 3-node cluster ---------------------------------------------
+rabbitmq:
+  enabled: true
+  fullnameOverride: rabbitmq
+  replicaCount: 3
+  auth:
+    username: journey_admin
+    password: *rabbitmqPass
+    erlangCookie: *rabbitmqCookie
+  clustering:
+    enabled: true
+    forceBoot: true
+  persistence:
+    enabled: true
+    size: 1Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  # Spread the 3 brokers across fault domains
+  podAntiAffinityPreset: hard
+
+# --- Redis + Sentinel (3 replicas, quorum 2) -----------------------------
+redis:
+  enabled: true
+  fullnameOverride: redis
+  architecture: replication
+  auth:
+    enabled: true
+    password: *redisPass
+  sentinel:
+    enabled: true
+    quorum: 2
+  replica:
+    replicaCount: 3
+    persistence:
+      enabled: true
+      size: 1Gi
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 300m
+        memory: 256Mi
+    # Spread replicas across fault domains
+    podAntiAffinityPreset: hard

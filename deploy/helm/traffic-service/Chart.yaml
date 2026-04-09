@@ -1,0 +1,77 @@
+apiVersion: v2
+name: traffic-service
+description: Umbrella chart for the Distributed Traffic Service (6 microservices + stateful data plane)
+type: application
+version: 0.2.0
+appVersion: "1.0"
+
+# ---------------------------------------------------------------------------
+# Dependencies
+# ---------------------------------------------------------------------------
+# - 6 local app subcharts live in ../charts/<svc>, pulled via file:// refs.
+# - 4 Postgres releases (2x HA for users/journeys, 2x standalone for
+#   conflicts/analytics — standalone saves ~400 MiB each on the 8 GiB nodes).
+# - 1 RabbitMQ 3-node cluster (Bitnami chart, not the operator — simpler
+#   and still distributed across the 3 fault domains).
+# - 1 Redis 3-node replication set with Sentinel enabled (quorum: 2).
+#
+# Pin loose ranges so `helm dep update` will resolve the newest compatible
+# Bitnami chart. If Bitnami repo moves / paywalls, see deploy/helm/README.md
+# for substitution notes (CloudNativePG, redis-operator, etc.).
+# ---------------------------------------------------------------------------
+dependencies:
+  # --- Application subcharts (Phase 5) ---
+  - name: user-service
+    version: "0.1.0"
+    repository: "file://../charts/user-service"
+  - name: journey-service
+    version: "0.1.0"
+    repository: "file://../charts/journey-service"
+  - name: conflict-service
+    version: "0.1.0"
+    repository: "file://../charts/conflict-service"
+  - name: notification-service
+    version: "0.1.0"
+    repository: "file://../charts/notification-service"
+  - name: enforcement-service
+    version: "0.1.0"
+    repository: "file://../charts/enforcement-service"
+  - name: analytics-service
+    version: "0.1.0"
+    repository: "file://../charts/analytics-service"
+
+  # --- Postgres HA (users, journeys) ---
+  - name: postgresql-ha
+    version: ">=14.0.0 <17.0.0"
+    repository: https://charts.bitnami.com/bitnami
+    alias: postgres-users
+    condition: postgres-users.enabled
+  - name: postgresql-ha
+    version: ">=14.0.0 <17.0.0"
+    repository: https://charts.bitnami.com/bitnami
+    alias: postgres-journeys
+    condition: postgres-journeys.enabled
+
+  # --- Postgres standalone (conflicts, analytics — memory saver) ---
+  - name: postgresql
+    version: ">=15.0.0 <17.0.0"
+    repository: https://charts.bitnami.com/bitnami
+    alias: postgres-conflicts
+    condition: postgres-conflicts.enabled
+  - name: postgresql
+    version: ">=15.0.0 <17.0.0"
+    repository: https://charts.bitnami.com/bitnami
+    alias: postgres-analytics
+    condition: postgres-analytics.enabled
+
+  # --- RabbitMQ 3-node cluster ---
+  - name: rabbitmq
+    version: ">=14.0.0 <17.0.0"
+    repository: https://charts.bitnami.com/bitnami
+    condition: rabbitmq.enabled
+
+  # --- Redis + Sentinel ---
+  - name: redis
+    version: ">=19.0.0 <22.0.0"
+    repository: https://charts.bitnami.com/bitnami
+    condition: redis.enabled

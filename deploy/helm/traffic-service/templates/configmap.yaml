@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: traffic-config
+  labels:
+    app.kubernetes.io/part-of: traffic-service
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+data:
+  REDIS_SENTINEL_ADDRS: {{ .Values.config.redisSentinelAddrs | quote }}
+  REDIS_MASTER_NAME: {{ .Values.config.redisMasterName | quote }}
+  SERVICES_BASE_URL: {{ .Values.config.servicesBaseUrl | quote }}

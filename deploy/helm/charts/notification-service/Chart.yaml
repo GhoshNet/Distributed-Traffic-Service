@@ -1,0 +1,6 @@
+apiVersion: v2
+name: notification-service
+description: Notification service subchart for the Distributed Traffic Service
+type: application
+version: 0.1.0
+appVersion: "1.0"

@@ -1,0 +1,39 @@
+dependencies:
+- name: user-service
+  repository: file://../charts/user-service
+  version: 0.1.0
+- name: journey-service
+  repository: file://../charts/journey-service
+  version: 0.1.0
+- name: conflict-service
+  repository: file://../charts/conflict-service
+  version: 0.1.0
+- name: notification-service
+  repository: file://../charts/notification-service
+  version: 0.1.0
+- name: enforcement-service
+  repository: file://../charts/enforcement-service
+  version: 0.1.0
+- name: analytics-service
+  repository: file://../charts/analytics-service
+  version: 0.1.0
+- name: postgresql-ha
+  repository: https://charts.bitnami.com/bitnami
+  version: 16.3.2
+- name: postgresql-ha
+  repository: https://charts.bitnami.com/bitnami
+  version: 16.3.2
+- name: postgresql
+  repository: https://charts.bitnami.com/bitnami
+  version: 16.7.27
+- name: postgresql
+  repository: https://charts.bitnami.com/bitnami
+  version: 16.7.27
+- name: rabbitmq
+  repository: https://charts.bitnami.com/bitnami
+  version: 16.0.14
+- name: redis
+  repository: https://charts.bitnami.com/bitnami
+  version: 21.2.14
+digest: sha256:84038f7a431361bb76b7596e2e23b29d95b7080bc88ae6daa5d228df93bd85ee
+generated: "2026-04-09T22:43:26.4594842+01:00"
