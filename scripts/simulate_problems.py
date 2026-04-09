@@ -1,22 +1,19 @@
 #!/usr/bin/env python3
 """
-simulate_problems.py — Interactive Distributed Systems Problem Simulator
-Ported and adapted from Archive/simulation/problems.py for the DTS microservices stack.
-
-Runs OUTSIDE the Docker stack and calls the services via the nginx gateway (port 8080).
-Requires: requests, rich, tabulate
-    pip install requests rich tabulate
+simulate_problems.py — GDTS Interactive Simulation Menu
+Implements the plan's 12-option terminal interface for demonstrating
+distributed systems problems and solutions.
 
 Usage:
     python scripts/simulate_problems.py [--gateway http://localhost:8080]
-    python scripts/simulate_problems.py --token <JWT>        # skip login prompt
+    python scripts/simulate_problems.py --token <JWT>
 """
 
 import argparse
 import random
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import requests
@@ -25,7 +22,6 @@ from rich.table import Table
 
 console = Console()
 
-# ─── Irish cities matching the conflict-service predefined routes ────────────
 IRISH_ROUTES = [
     {
         "route_id": "dublin-galway",
@@ -64,19 +60,41 @@ IRISH_ROUTES = [
     },
 ]
 
+# Cross-region routes (simulate multi-region topology)
+CROSS_REGION_ROUTES = [
+    {
+        "route_id": "dublin-london",
+        "origin": "Dublin (IE)", "destination": "London (UK)",
+        "origin_lat": 53.3498, "origin_lng": -6.2603,
+        "destination_lat": 51.5074, "destination_lng": -0.1278,
+        "duration": 120,
+        "regions": ["Dublin", "London"],
+    },
+    {
+        "route_id": "cork-paris",
+        "origin": "Cork (IE)", "destination": "Paris (FR)",
+        "origin_lat": 51.8985, "origin_lng": -8.4756,
+        "destination_lat": 48.8566, "destination_lng": 2.3522,
+        "duration": 180,
+        "regions": ["Cork", "Paris"],
+    },
+    {
+        "route_id": "belfast-berlin",
+        "origin": "Belfast (UK)", "destination": "Berlin (DE)",
+        "origin_lat": 54.5973, "origin_lng": -5.9301,
+        "destination_lat": 52.5200, "destination_lng": 13.4050,
+        "duration": 150,
+        "regions": ["Belfast", "Berlin"],
+    },
+]
+
 
 def future_departure(minutes_ahead: int = 60) -> str:
-    return (datetime.utcnow() + timedelta(minutes=minutes_ahead)).isoformat()
+    return (datetime.now(timezone.utc) + timedelta(minutes=minutes_ahead)).isoformat()
 
 
 def pick_route() -> dict:
     return random.choice(IRISH_ROUTES)
-
-
-def pick_two_routes():
-    if len(IRISH_ROUTES) < 2:
-        return IRISH_ROUTES[0], IRISH_ROUTES[0]
-    return random.sample(IRISH_ROUTES, 2)
 
 
 # ─── Session / auth ──────────────────────────────────────────────────────────
@@ -100,6 +118,9 @@ class Session:
             self.gateway + path, json=body or {},
             headers=self.headers(), timeout=15, **kwargs
         )
+
+    def delete(self, path: str, **kwargs):
+        return requests.delete(self.gateway + path, headers=self.headers(), timeout=10, **kwargs)
 
     def login(self, email: str, password: str) -> bool:
         try:
@@ -127,8 +148,8 @@ def print_node_health(session: Session):
             console.print("[red]  Could not fetch node health[/red]")
             return
         data = r.json()
-        tbl = Table(title="Peer Node Health (Archive ALIVE/SUSPECT/DEAD model)", show_lines=True)
-        tbl.add_column("Service")
+        tbl = Table(title="Peer Node Health (ALIVE/SUSPECT/DEAD)", show_lines=True)
+        tbl.add_column("Service / Region")
         tbl.add_column("Status")
         tbl.add_column("Failures")
         tbl.add_column("Last Seen (s)")
@@ -143,7 +164,7 @@ def print_node_health(session: Session):
             )
         console.print(tbl)
         if data.get("local_only_mode"):
-            console.print("[bold red]⚠  LOCAL ONLY MODE active[/bold red]")
+            console.print("[bold red]⚠  LOCAL ONLY MODE active — cross-region requests queued[/bold red]")
     except Exception as exc:
         console.print(f"[red]  Health check error: {exc}[/red]")
 
@@ -154,7 +175,7 @@ def print_partitions(session: Session):
         if not r.ok:
             return
         data = r.json()
-        tbl = Table(title="Partition Manager State (CONNECTED/SUSPECTED/PARTITIONED)", show_lines=True)
+        tbl = Table(title="Partition Manager State", show_lines=True)
         tbl.add_column("Dependency")
         tbl.add_column("State")
         tbl.add_column("Failures")
@@ -174,13 +195,277 @@ def print_partitions(session: Session):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  Problem 1 — Data Consistency Conflict
+#  [1] Book a journey
+# ══════════════════════════════════════════════════════════════════════════════
+
+def book_journey(session: Session):
+    console.rule("[bold cyan]Book a Journey[/bold cyan]")
+    console.print("  Available routes:")
+    for i, r in enumerate(IRISH_ROUTES, 1):
+        console.print(f"    [{i}] {r['origin']} → {r['destination']} ({r['duration']} min)")
+    try:
+        choice = int(input("  Select route [1-5]: ").strip() or "1") - 1
+        route = IRISH_ROUTES[choice % len(IRISH_ROUTES)]
+    except (ValueError, IndexError):
+        route = IRISH_ROUTES[0]
+
+    try:
+        mins = int(input("  Departure in how many minutes from now? [60]: ").strip() or "60")
+    except ValueError:
+        mins = 60
+
+    try:
+        vehicle = input("  Vehicle registration [MY-VEHICLE-01]: ").strip() or "MY-VEHICLE-01"
+    except EOFError:
+        vehicle = "MY-VEHICLE-01"
+
+    dep = future_departure(mins)
+    console.print(f"\n  Booking [cyan]{route['origin']} → {route['destination']}[/cyan] @ {dep[:16]}")
+
+    try:
+        r = session.post("/api/journeys/", {
+            "origin": route["origin"], "destination": route["destination"],
+            "origin_lat": route["origin_lat"], "origin_lng": route["origin_lng"],
+            "destination_lat": route["destination_lat"], "destination_lng": route["destination_lng"],
+            "departure_time": dep,
+            "estimated_duration_minutes": route["duration"],
+            "vehicle_registration": vehicle,
+            "vehicle_type": "CAR",
+        })
+        data = r.json()
+        ok = data.get("status") == "CONFIRMED"
+        icon = "✅" if ok else "❌"
+        console.print(f"\n  {icon} Status: [bold]{data.get('status')}[/bold]")
+        if data.get("id"):
+            console.print(f"  Journey ID: {data['id']}")
+        if data.get("rejection_reason"):
+            console.print(f"  Reason: {data['rejection_reason']}")
+    except Exception as exc:
+        console.print(f"  [red]Error: {exc}[/red]")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  [2] Cancel a journey
+# ══════════════════════════════════════════════════════════════════════════════
+
+def cancel_journey(session: Session):
+    console.rule("[bold cyan]Cancel a Journey[/bold cyan]")
+    try:
+        journey_id = input("  Journey ID to cancel: ").strip()
+    except EOFError:
+        console.print("[red]  No input provided.[/red]")
+        return
+
+    if not journey_id:
+        console.print("[red]  Journey ID required.[/red]")
+        return
+
+    try:
+        r = session.delete(f"/api/journeys/{journey_id}")
+        if r.ok:
+            data = r.json()
+            console.print(f"  ✅ Journey [bold]{journey_id}[/bold] cancelled. Status: {data.get('status')}")
+        else:
+            console.print(f"  [red]Failed: {r.status_code} — {r.text[:100]}[/red]")
+    except Exception as exc:
+        console.print(f"  [red]Error: {exc}[/red]")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  [3] View all bookings
+# ══════════════════════════════════════════════════════════════════════════════
+
+def view_bookings(session: Session):
+    console.rule("[bold cyan]All Bookings[/bold cyan]")
+    try:
+        r = session.get("/api/journeys/")
+        if not r.ok:
+            console.print(f"  [red]Failed: {r.status_code}[/red]")
+            return
+        data = r.json()
+        journeys = data.get("journeys", [])
+        if not journeys:
+            console.print("  [dim]No bookings found.[/dim]")
+            return
+        tbl = Table(title=f"Bookings (total: {data.get('total', len(journeys))})", show_lines=True)
+        tbl.add_column("ID")
+        tbl.add_column("Route")
+        tbl.add_column("Departure")
+        tbl.add_column("Status")
+        tbl.add_column("Vehicle")
+        for j in journeys[:20]:
+            status = j.get("status", "?")
+            color = {
+                "CONFIRMED": "green", "PENDING": "yellow",
+                "CANCELLED": "red", "IN_PROGRESS": "cyan", "COMPLETED": "blue"
+            }.get(status, "white")
+            dep = j.get("departure_time", "")[:16] if j.get("departure_time") else "?"
+            tbl.add_row(
+                j.get("id", "?")[:8] + "…",
+                f"{j.get('origin','?')} → {j.get('destination','?')}",
+                dep,
+                f"[{color}]{status}[/{color}]",
+                j.get("vehicle_registration", "?"),
+            )
+        console.print(tbl)
+        if data.get("total", 0) > 20:
+            console.print(f"  [dim](showing 20 of {data['total']})[/dim]")
+    except Exception as exc:
+        console.print(f"  [red]Error: {exc}[/red]")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  [4] Show region road network
+# ══════════════════════════════════════════════════════════════════════════════
+
+def show_region_network(session: Session):
+    console.rule("[bold cyan]Region Road Network[/bold cyan]")
+    try:
+        r = session.get("/api/region")
+        if r.ok:
+            data = r.json()
+            region = data.get("region_name", "unknown")
+            console.print(f"  Region: [bold green]{region}[/bold green]")
+            console.print(f"  API:    {data.get('journey_service_url', 'N/A')}")
+            graph = data.get("graph_summary", {})
+            console.print(f"  Graph:  {graph}")
+
+            peers = data.get("peers", {})
+            if peers:
+                console.print(f"\n  Connected peer regions ({len(peers)}):")
+                for name, info in peers.items():
+                    age = info.get("last_seen_s_ago", "?")
+                    console.print(f"    • [cyan]{name}[/cyan] — {info.get('journey_service_url')} (seen {age}s ago)")
+            else:
+                console.print("  [dim]No peer regions discovered yet (waiting for UDP broadcasts…)[/dim]")
+        else:
+            console.print(f"  [yellow]/api/region not available ({r.status_code}) — showing predefined routes[/yellow]")
+
+        # Always show predefined Irish routes
+        console.print("\n  [bold]Predefined Irish road routes:[/bold]")
+        try:
+            rr = session.get("/api/conflicts/routes")
+            if rr.ok:
+                routes = rr.json().get("routes", [])
+                for route in routes:
+                    console.print(f"    • {route.get('name', route.get('route_id', '?'))}")
+            else:
+                for route in IRISH_ROUTES:
+                    console.print(f"    • {route['origin']} → {route['destination']} ({route['duration']} min)")
+        except Exception:
+            for route in IRISH_ROUTES:
+                console.print(f"    • {route['origin']} → {route['destination']} ({route['duration']} min)")
+
+    except Exception as exc:
+        console.print(f"  [red]Error: {exc}[/red]")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  [5] Show connected peers
+# ══════════════════════════════════════════════════════════════════════════════
+
+def show_connected_peers(session: Session):
+    console.rule("[bold cyan]Connected Region Peers[/bold cyan]")
+    console.print("  [dim]Discovered via UDP broadcast (port 5001, every 5s)[/dim]\n")
+
+    print_node_health(session)
+    console.print()
+
+    try:
+        r = session.get("/api/region")
+        if r.ok:
+            data = r.json()
+            peers = data.get("peers", {})
+            if peers:
+                tbl = Table(title="UDP-Discovered Region Peers", show_lines=True)
+                tbl.add_column("Region")
+                tbl.add_column("Journey Service URL")
+                tbl.add_column("Last Seen (s)")
+                for name, info in peers.items():
+                    tbl.add_row(
+                        f"[cyan]{name}[/cyan]",
+                        info.get("journey_service_url", "?"),
+                        str(info.get("last_seen_s_ago", "?")),
+                    )
+                console.print(tbl)
+            else:
+                console.print("  [dim]No UDP peers discovered yet.[/dim]")
+                console.print("  [dim]Run another instance with a different REGION_NAME on the same LAN.[/dim]")
+    except Exception as exc:
+        console.print(f"  [yellow]Could not fetch peer list: {exc}[/yellow]")
+
+    print_partitions(session)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  [6] Simulate: Network Delay
+# ══════════════════════════════════════════════════════════════════════════════
+
+def simulate_network_delay(session: Session):
+    console.rule("[bold red]SIMULATE: Network Delay[/bold red]")
+    console.print("  [dim]Injects artificial sleep on incoming requests to this node.[/dim]")
+    console.print("  [dim]Solution: Timeout handling + retry with exponential backoff.[/dim]\n")
+
+    try:
+        current = session.get("/admin/simulate/delay")
+        if current.ok:
+            console.print(f"  Current delay: [yellow]{current.json().get('delay_ms', 0)}ms[/yellow]")
+    except Exception:
+        pass
+
+    try:
+        delay_ms = int(input("  Set delay in ms (0 to disable, e.g. 200): ").strip() or "200")
+    except ValueError:
+        delay_ms = 200
+
+    try:
+        r = session.post("/admin/simulate/delay", {"delay_ms": delay_ms})
+        if r.ok:
+            data = r.json()
+            if delay_ms > 0:
+                console.print(f"  [yellow]⏱  Network delay active: {data['delay_ms']}ms on all requests[/yellow]")
+                console.print("  [dim]Try booking a journey now to observe the latency effect.[/dim]")
+                console.print("  [dim]Services will use timeout handling and retry with backoff.[/dim]")
+            else:
+                console.print("  [green]✅ Network delay disabled[/green]")
+        else:
+            console.print(f"  [yellow]Could not set delay via API ({r.status_code}) — feature may require restart[/yellow]")
+    except Exception as exc:
+        console.print(f"  [red]Error: {exc}[/red]")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  [7] Simulate: Node Failure
+# ══════════════════════════════════════════════════════════════════════════════
+
+def simulate_node_failure(session: Session):
+    console.rule("[bold red]SIMULATE: Node Failure[/bold red]")
+    console.print("  [dim]Makes this node's /health return 503 — peers will detect it as SUSPECT → DEAD.[/dim]")
+    console.print("  [dim]Solution: Peers detect via missed heartbeats; re-route traffic.[/dim]\n")
+
+    try:
+        r = session.post("/admin/simulate/fail")
+        if r.ok:
+            data = r.json()
+            console.print(f"  [bold red]💀 {data.get('message')}[/bold red]")
+            console.print("\n  [dim]Peer health monitors will detect:[/dim]")
+            console.print("  [dim]  3 missed pings (~30s) → SUSPECT[/dim]")
+            console.print("  [dim]  6 missed pings (~60s) → DEAD[/dim]")
+            console.print("\n  [dim]Use option [11] to recover this node.[/dim]")
+        else:
+            console.print(f"  [red]Failed: {r.status_code} — {r.text[:100]}[/red]")
+    except Exception as exc:
+        console.print(f"  [red]Error: {exc}[/red]")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  [8] Simulate: Data Consistency conflict
 # ══════════════════════════════════════════════════════════════════════════════
 
 def simulate_data_consistency(session: Session):
     console.rule("[bold red]SIMULATE: Data Consistency Conflict[/bold red]")
     console.print("  [dim]Two concurrent drivers book the same route at the same time.[/dim]")
-    console.print("  [dim]Conflict detection (SELECT FOR UPDATE) ensures only one succeeds.[/dim]\n")
+    console.print("  [dim]Solution: Optimistic locking + version vectors via conflict service.[/dim]\n")
 
     route = pick_route()
     dep = future_departure(90)
@@ -226,23 +511,24 @@ def simulate_data_consistency(session: Session):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  Problem 2 — Concurrent Booking Storm
+#  [9] Simulate: Concurrent booking storm
 # ══════════════════════════════════════════════════════════════════════════════
 
 def simulate_concurrent_storm(session: Session):
     console.rule("[bold red]SIMULATE: Concurrent Booking Storm[/bold red]")
+    console.print("  [dim]Solution: Thread-safe SQLite writes with serializable transactions.[/dim]\n")
     try:
         n = int(input("  Number of concurrent booking requests (e.g. 15): ").strip() or "15")
     except ValueError:
         n = 15
 
-    console.print(f"  [yellow]Firing {n} concurrent bookings to stress-test locking and capacity…[/yellow]\n")
+    console.print(f"  [yellow]Firing {n} concurrent bookings…[/yellow]\n")
 
     results = []
     lock = threading.Lock()
 
     def worker(i: int):
-        route = pick_route()
+        route = random.choice(IRISH_ROUTES)
         dep = future_departure(random.randint(10, 240))
         try:
             r = session.post("/api/journeys/", {
@@ -273,25 +559,32 @@ def simulate_concurrent_storm(session: Session):
     elapsed = time.time() - t0
 
     ok_count = sum(results)
-    console.print(f"\n  [bold green]Storm complete: {ok_count}/{n} confirmed in {elapsed:.2f}s "
-                  f"({n/elapsed:.1f} req/s)[/bold green]")
+    console.print(f"\n  [bold green]Storm complete: {ok_count}/{n} confirmed in {elapsed:.2f}s ({n/elapsed:.1f} req/s)[/bold green]")
     console.print("  [dim]Serialisable transactions in conflict-service ensured no phantom bookings.[/dim]")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  Problem 3 — Two-Phase Commit Demo
+#  [10] Simulate: Cross-region booking (partitioned data)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def simulate_two_phase_commit(session: Session):
-    console.rule("[bold red]SIMULATE: Two-Phase Commit (2PC / TCC)[/bold red]")
-    console.print("  [dim]Books a journey using the 2PC TCC coordinator instead of the Saga.[/dim]")
-    console.print("  [dim]PREPARE → CONFIRM/CANCEL — watch the logs for TXN=… entries.[/dim]\n")
+def simulate_cross_region(session: Session):
+    console.rule("[bold red]SIMULATE: Cross-Region Booking (Partitioned Data)[/bold red]")
+    console.print("  [dim]Books a journey spanning two regions using Two-Phase Commit (2PC).[/dim]")
+    console.print("  [dim]Solution: Consistent hashing assigns home region; 2PC for cross-region.[/dim]\n")
 
-    route = pick_route()
+    console.print("  Cross-region routes:")
+    for i, r in enumerate(CROSS_REGION_ROUTES, 1):
+        console.print(f"    [{i}] {r['origin']} → {r['destination']} (regions: {' + '.join(r['regions'])})")
+    try:
+        choice = int(input("  Select route [1-3]: ").strip() or "1") - 1
+        route = CROSS_REGION_ROUTES[choice % len(CROSS_REGION_ROUTES)]
+    except (ValueError, IndexError):
+        route = CROSS_REGION_ROUTES[0]
+
     dep = future_departure(120)
-
-    console.print(f"  Route: [cyan]{route['origin']} → {route['destination']}[/cyan]")
-    console.print(f"  Sending POST /api/journeys/?mode=2pc …\n")
+    console.print(f"\n  Route: [cyan]{route['origin']} → {route['destination']}[/cyan]")
+    console.print(f"  Regions involved: [yellow]{' ↔ '.join(route['regions'])}[/yellow]")
+    console.print("  Sending booking with ?mode=2pc to trigger cross-region 2PC protocol…\n")
 
     try:
         r = requests.post(
@@ -302,7 +595,7 @@ def simulate_two_phase_commit(session: Session):
                 "destination_lat": route["destination_lat"], "destination_lng": route["destination_lng"],
                 "departure_time": dep,
                 "estimated_duration_minutes": route["duration"],
-                "vehicle_registration": "TPC-DEMO-01",
+                "vehicle_registration": "XREG-DEMO-01",
                 "vehicle_type": "CAR",
             },
             headers=session.headers(),
@@ -316,147 +609,70 @@ def simulate_two_phase_commit(session: Session):
             console.print(f"  Reason: {data['rejection_reason']}")
         if ok:
             console.print(f"  Journey ID: {data.get('id')}")
-            console.print("  [green]2PC COMMIT phase succeeded — capacity reserved + journey confirmed atomically.[/green]")
+            console.print("  [green]2PC cross-region COMMIT — capacity reserved in both regions.[/green]")
         else:
-            console.print("  [yellow]2PC ABORT path — capacity released via compensating CANCEL call.[/yellow]")
+            console.print("  [yellow]2PC ABORT — one region rejected; all capacity released.[/yellow]")
+        console.print("\n  [dim]Watch logs on both region nodes for: [2PC] TXN=… PREPARE / COMMIT / ABORT[/dim]")
     except Exception as exc:
         console.print(f"  [red]Error: {exc}[/red]")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  Problem 4 — Node Health / Failure Detection
+#  [11] Simulate: Node Recovery
 # ══════════════════════════════════════════════════════════════════════════════
 
-def simulate_node_failure_detection(session: Session):
-    console.rule("[bold red]SIMULATE: Node Failure Detection[/bold red]")
-    console.print("  [dim]This shows the ALIVE/SUSPECT/DEAD state machine from the Archive.[/dim]")
-    console.print("  [dim]To trigger it: docker stop <service> and watch the health monitor transition.[/dim]\n")
+def simulate_node_recovery(session: Session):
+    console.rule("[bold red]SIMULATE: Node Recovery (Re-join Network)[/bold red]")
+    console.print("  [dim]Restores a failed node — /health returns 200 again.[/dim]")
+    console.print("  [dim]Solution: Node re-announces, pulls missed bookings via replication sync.[/dim]\n")
 
-    print_node_health(session)
-    console.print()
-    print_partitions(session)
-
-    console.print("\n  [bold]To simulate a node failure:[/bold]")
-    console.print("  [cyan]  docker stop distributed-traffic-service-conflict-service-1[/cyan]")
-    console.print("  [dim]  After 3 probes (~30s): conflict-service → SUSPECT[/dim]")
-    console.print("  [dim]  After 6 probes (~60s): conflict-service → DEAD[/dim]")
-    console.print("  [dim]  On restart: conflict-service → ALIVE (recovery triggered)[/dim]")
-    console.print("\n  [bold]To recover:[/bold]")
-    console.print("  [cyan]  docker start distributed-traffic-service-conflict-service-1[/cyan]")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  Problem 5 — Circuit Breaker
-# ══════════════════════════════════════════════════════════════════════════════
-
-def simulate_circuit_breaker(session: Session):
-    console.rule("[bold red]SIMULATE: Circuit Breaker[/bold red]")
-    console.print("  [dim]Fires rapid bookings. After 3 failures the circuit breaker opens.[/dim]")
-    console.print("  [dim]Subsequent requests fast-fail instead of waiting for timeout.[/dim]\n")
-
-    route = pick_route()
-    console.print(f"  Route: [cyan]{route['origin']} → {route['destination']}[/cyan]")
-    console.print("  Firing 6 sequential booking requests…\n")
-
-    for i in range(1, 7):
-        dep = future_departure(random.randint(30, 180))
-        t0 = time.time()
-        try:
-            r = session.post("/api/journeys/", {
-                "origin": route["origin"], "destination": route["destination"],
-                "origin_lat": route["origin_lat"], "origin_lng": route["origin_lng"],
-                "destination_lat": route["destination_lat"], "destination_lng": route["destination_lng"],
-                "departure_time": dep,
-                "estimated_duration_minutes": route["duration"],
-                "vehicle_registration": f"CB-TEST-{i:02d}",
-                "vehicle_type": "CAR",
-            })
-            elapsed_ms = (time.time() - t0) * 1000
+    try:
+        r = session.post("/admin/simulate/recover")
+        if r.ok:
             data = r.json()
-            status = data.get("status", "?")
-            reason = data.get("rejection_reason") or ""
-            icon = "✅" if status == "CONFIRMED" else "⚠️ "
-            console.print(f"  [{i}] {icon} {status} — {elapsed_ms:.0f}ms  {reason[:50]}")
-        except Exception as exc:
-            elapsed_ms = (time.time() - t0) * 1000
-            console.print(f"  [{i}] [red]ERROR — {elapsed_ms:.0f}ms: {exc}[/red]")
-        time.sleep(0.2)
-
-    console.print(
-        "\n  [dim]If conflict-service was down, requests 1-3 hit timeout, "
-        "then 4-6 fast-fail (circuit OPEN).[/dim]"
-    )
+            console.print(f"  [bold green]🟢 {data.get('message')}[/bold green]")
+            console.print("\n  [dim]Outbox drain (missed events):[/dim]")
+            dr = session.post("/admin/recovery/drain-outbox")
+            if dr.ok:
+                ddata = dr.json()
+                console.print(f"  [green]Drained {ddata.get('events_drained', 0)} missed outbox event(s)[/green]")
+            console.print("\n  [dim]Peers will detect ALIVE on next heartbeat cycle (~10s).[/dim]")
+        else:
+            console.print(f"  [red]Failed: {r.status_code} — {r.text[:100]}[/red]")
+    except Exception as exc:
+        console.print(f"  [red]Error: {exc}[/red]")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  Problem 6 — Graceful Degradation
+#  [12] Simulate: Graceful Degradation
 # ══════════════════════════════════════════════════════════════════════════════
 
 def simulate_graceful_degradation(session: Session):
     console.rule("[bold red]SIMULATE: Graceful Degradation[/bold red]")
-    console.print("  [dim]When >50% of peer services are unreachable, the health monitor[/dim]")
-    console.print("  [dim]enters LOCAL ONLY mode — mirrors Archive's graceful-degradation flag.[/dim]\n")
+    console.print("  [dim]When <50% of known peers are reachable → LOCAL ONLY mode.[/dim]")
+    console.print("  [dim]Solution: Queue cross-region requests; operate on local bookings only.[/dim]\n")
 
     print_node_health(session)
 
-    console.print("\n  [bold]Current mode:[/bold]")
     try:
         r = session.get("/health/nodes")
         if r.ok:
             data = r.json()
             if data.get("local_only_mode"):
-                console.print("  [bold red]🔴 LOCAL ONLY MODE is active[/bold red]")
-                console.print("  [dim]Restart stopped services to return to global mode.[/dim]")
+                console.print("\n  [bold red]🔴 LOCAL ONLY MODE active[/bold red]")
+                console.print("  [dim]Cross-region bookings queued. Restart stopped services to exit.[/dim]")
             else:
-                console.print("  [bold green]🟢 GLOBAL mode — all/majority of peers reachable[/bold green]")
-                console.print(
-                    "  [dim]Stop ≥3 services to trigger LOCAL ONLY mode:[/dim]\n"
-                    "  [cyan]  docker stop distributed-traffic-service-notification-service-1[/cyan]\n"
-                    "  [cyan]  docker stop distributed-traffic-service-analytics-service-1[/cyan]\n"
-                    "  [cyan]  docker stop distributed-traffic-service-enforcement-service-1[/cyan]"
-                )
+                peers = data.get("peers", {})
+                alive = sum(1 for p in peers.values() if p["status"] == "ALIVE")
+                total = len(peers)
+                console.print(f"\n  [bold green]🟢 GLOBAL mode[/bold green] — {alive}/{total} peers alive")
+                console.print(f"  [dim]To trigger LOCAL ONLY mode, stop >{total // 2} peer services.[/dim]")
+                console.print("  [dim]Example:[/dim]")
+                console.print("  [cyan]  docker stop distributed-traffic-service-notification-service-1[/cyan]")
+                console.print("  [cyan]  docker stop distributed-traffic-service-analytics-service-1[/cyan]")
+                console.print("  [cyan]  docker stop distributed-traffic-service-enforcement-service-1[/cyan]")
     except Exception as exc:
         console.print(f"  [red]Error: {exc}[/red]")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  Problem 7 — Transactional Outbox / At-Least-Once Delivery
-# ══════════════════════════════════════════════════════════════════════════════
-
-def simulate_outbox_delivery(session: Session):
-    console.rule("[bold red]SIMULATE: Transactional Outbox / At-Least-Once Delivery[/bold red]")
-    console.print("  [dim]Books a journey and then triggers the outbox drain to confirm[/dim]")
-    console.print("  [dim]the event was published to RabbitMQ (transactional outbox pattern).[/dim]\n")
-
-    route = pick_route()
-    dep = future_departure(60)
-
-    console.print(f"  Step 1 — booking [cyan]{route['origin']} → {route['destination']}[/cyan]")
-    try:
-        r = session.post("/api/journeys/", {
-            "origin": route["origin"], "destination": route["destination"],
-            "origin_lat": route["origin_lat"], "origin_lng": route["origin_lng"],
-            "destination_lat": route["destination_lat"], "destination_lng": route["destination_lng"],
-            "departure_time": dep,
-            "estimated_duration_minutes": route["duration"],
-            "vehicle_registration": "OUTBOX-DEMO",
-            "vehicle_type": "CAR",
-        })
-        data = r.json()
-        console.print(f"  Journey status: [bold]{data.get('status')}[/bold]  id={data.get('id')}")
-
-        console.print("\n  Step 2 — forcing outbox drain via POST /admin/recovery/drain-outbox")
-        dr = session.post("/admin/recovery/drain-outbox")
-        if dr.ok:
-            ddata = dr.json()
-            console.print(f"  [green]Drained {ddata.get('events_drained', 0)} outbox event(s) to RabbitMQ[/green]")
-        else:
-            console.print(f"  [yellow]Drain returned {dr.status_code}: {dr.text[:80]}[/yellow]")
-    except Exception as exc:
-        console.print(f"  [red]Error: {exc}[/red]")
-
-    console.print("\n  [dim]The outbox guarantees at-least-once delivery: even if RabbitMQ was[/dim]")
-    console.print("  [dim]temporarily down, the event is persisted and will be re-sent on next drain.[/dim]")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -465,7 +681,6 @@ def simulate_outbox_delivery(session: Session):
 
 def run_menu(session: Session):
     while True:
-        console.rule()
         try:
             r = session.get("/health/nodes")
             hn = r.json() if r.ok else {}
@@ -474,32 +689,33 @@ def run_menu(session: Session):
             hn = {}
             local_only = False
 
-        alive = sum(
-            1 for p in hn.get("peers", {}).values() if p["status"] == "ALIVE"
-        )
+        alive = sum(1 for p in hn.get("peers", {}).values() if p["status"] == "ALIVE")
         total = len(hn.get("peers", {}))
 
-        console.print(f"\n[bold bright_white]  ═══ DTS Simulation Terminal ═══[/bold bright_white]")
+        console.print()
+        console.rule("[bold bright_white]═══ GDTS Simulation Menu ═══[/bold bright_white]")
         console.print(
             f"  [dim]Gateway: {session.gateway}  |  "
             f"Peers: {alive}/{total} alive  |  "
-            f"{'🔴 LOCAL-ONLY' if local_only else '🟢 GLOBAL'}[/dim]\n"
+            f"{'[bold red]🔴 LOCAL-ONLY[/bold red]' if local_only else '[bold green]🟢 GLOBAL[/bold green]'}[/dim]\n"
         )
 
-        console.print("  [bold cyan]── Standard Checks ──[/bold cyan]")
-        console.print("  [1]  Show peer node health   (ALIVE/SUSPECT/DEAD)")
-        console.print("  [2]  Show partition state    (CONNECTED/PARTITIONED)")
+        console.print("  [bold cyan][1][/bold cyan]  Book a journey")
+        console.print("  [bold cyan][2][/bold cyan]  Cancel a journey")
+        console.print("  [bold cyan][3][/bold cyan]  View all bookings")
+        console.print("  [bold cyan][4][/bold cyan]  Show region road network")
+        console.print("  [bold cyan][5][/bold cyan]  Show connected peers")
 
-        console.print("\n  [bold red]── Simulate Distributed Problems ──[/bold red]")
-        console.print("  [3]  🔀 Data Consistency     — concurrent conflict")
-        console.print("  [4]  🌪️  Concurrent Storm    — booking flood")
-        console.print("  [5]  🔄 Two-Phase Commit     — 2PC / TCC demo")
-        console.print("  [6]  💀 Failure Detection   — ALIVE/SUSPECT/DEAD walkthrough")
-        console.print("  [7]  ⚡ Circuit Breaker      — fast-fail demo")
-        console.print("  [8]  🔴 Graceful Degradation — LOCAL ONLY mode")
-        console.print("  [9]  📦 Transactional Outbox — at-least-once delivery")
+        console.print("\n  [bold red]--- Simulate Distributed Problems ---[/bold red]")
+        console.print("  [bold red][6][/bold red]   Simulate: Network Delay (inject latency)")
+        console.print("  [bold red][7][/bold red]   Simulate: Node Failure (self-shutdown)")
+        console.print("  [bold red][8][/bold red]   Simulate: Data Consistency conflict")
+        console.print("  [bold red][9][/bold red]   Simulate: Concurrent booking storm")
+        console.print("  [bold red][10][/bold red]  Simulate: Cross-region booking (partitioned data)")
+        console.print("  [bold red][11][/bold red]  Simulate: Node Recovery (re-join network)")
+        console.print("  [bold red][12][/bold red]  Simulate: Graceful Degradation (peer unavailable)")
 
-        console.print("\n  [0]  Exit\n")
+        console.print("\n  [dim][0]  Exit[/dim]\n")
 
         try:
             choice = input("  Select: ").strip()
@@ -509,43 +725,46 @@ def run_menu(session: Session):
         if choice == "0":
             break
         elif choice == "1":
-            print_node_health(session)
+            book_journey(session)
         elif choice == "2":
-            print_partitions(session)
+            cancel_journey(session)
         elif choice == "3":
-            simulate_data_consistency(session)
+            view_bookings(session)
         elif choice == "4":
-            simulate_concurrent_storm(session)
+            show_region_network(session)
         elif choice == "5":
-            simulate_two_phase_commit(session)
+            show_connected_peers(session)
         elif choice == "6":
-            simulate_node_failure_detection(session)
+            simulate_network_delay(session)
         elif choice == "7":
-            simulate_circuit_breaker(session)
+            simulate_node_failure(session)
         elif choice == "8":
-            simulate_graceful_degradation(session)
+            simulate_data_consistency(session)
         elif choice == "9":
-            simulate_outbox_delivery(session)
+            simulate_concurrent_storm(session)
+        elif choice == "10":
+            simulate_cross_region(session)
+        elif choice == "11":
+            simulate_node_recovery(session)
+        elif choice == "12":
+            simulate_graceful_degradation(session)
         else:
             console.print("[red]  Unknown option.[/red]")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="DTS Distributed Systems Simulator")
-    parser.add_argument(
-        "--gateway", default="http://localhost:8080",
-        help="API gateway URL (default: http://localhost:8080)"
-    )
+    parser = argparse.ArgumentParser(description="GDTS Distributed Systems Simulator")
+    parser.add_argument("--gateway", default="http://localhost:8080", help="API gateway URL")
     parser.add_argument("--token", default=None, help="JWT bearer token (skips login)")
     args = parser.parse_args()
 
-    console.print(f"\n[bold bright_green]  DTS Distributed Systems Simulator[/bold bright_green]")
+    console.print(f"\n[bold bright_green]  GDTS — Globally Distributed Traffic Service[/bold bright_green]")
     console.print(f"  Gateway: [cyan]{args.gateway}[/cyan]\n")
 
     session = Session(gateway=args.gateway, token=args.token)
 
     if not session.token:
-        console.print("  [dim]Enter credentials to authenticate (or Ctrl+C to exit)[/dim]")
+        console.print("  [dim]Enter credentials (or Ctrl+C to exit)[/dim]")
         try:
             email = input("  Email    : ").strip()
             password = input("  Password : ").strip()
@@ -556,7 +775,7 @@ def main():
         if not session.login(email, password):
             console.print("[red]  Authentication failed. Exiting.[/red]")
             return
-        console.print("[green]  Authenticated successfully.[/green]\n")
+        console.print("[green]  Authenticated.[/green]\n")
 
     run_menu(session)
     console.print("\n[dim]  Goodbye.[/dim]\n")

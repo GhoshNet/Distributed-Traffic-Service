@@ -18,6 +18,9 @@ def setup_logging(service_name: str, level: str = "INFO"):
     logging.getLogger("aio_pika").setLevel(logging.WARNING)
     logging.getLogger("aiormq").setLevel(logging.WARNING)
     logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+    # httpx/httpcore log every outgoing request at INFO — too noisy for health pings
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 class Settings:
@@ -34,3 +37,7 @@ class Settings:
         "JWT_SECRET", "super-secret-jwt-key-change-in-production"
     )
     DEBUG: bool = os.getenv("DEBUG", "false").lower() == "true"
+    REGION_NAME: str = os.getenv("REGION_NAME", "Dublin")
+    UDP_DISCOVERY_PORT: int = int(os.getenv("UDP_DISCOVERY_PORT", "5001"))
+    API_HOST: str = os.getenv("API_HOST", "")
+    API_PORT: int = int(os.getenv("API_PORT", "8000"))

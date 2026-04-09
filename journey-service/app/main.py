@@ -3,8 +3,9 @@ Journey Service - FastAPI application entry point.
 """
 
 import logging
+import time
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,6 +25,7 @@ from shared.partition import (
     make_rabbitmq_probe, make_http_probe,
 )
 from shared.health_monitor import PeerHealthMonitor
+from shared.discovery import UDPDiscovery
 
 setup_logging("journey-service")
 logger = logging.getLogger(__name__)
@@ -37,6 +39,12 @@ health_monitor = PeerHealthMonitor("journey-service")
 # Node failure simulation flag — mirrors Archive's state.failure_simulated
 # When True: /health returns 503 so peers detect this node as DEAD
 _node_failed = False
+
+# Global UDP discovery instance (set during lifespan startup)
+udp_discovery = None
+
+# Network delay simulation (ms); 0 = disabled
+_network_delay_ms = 0
 
 
 @asynccontextmanager
@@ -94,9 +102,33 @@ async def lifespan(app: FastAPI):
     await health_monitor.start()
     logger.info("Peer health monitor started")
 
+    # Start UDP peer discovery
+    global udp_discovery
+    region_name = os.getenv("REGION_NAME", "Dublin")
+    api_host = os.getenv("API_HOST", "")
+    api_port = int(os.getenv("API_PORT", "8000"))
+
+    def on_peer_discovered(peer):
+        # Register discovered peer with health monitor
+        health_monitor.register(
+            f"region-{peer.region_name}",
+            peer.health_url,
+        )
+        logger.info(f"[Discovery] Auto-registered peer region '{peer.region_name}' with health monitor")
+
+    udp_discovery = UDPDiscovery(
+        region_name=region_name,
+        api_host=api_host,
+        api_port=api_port,
+        on_peer_discovered=on_peer_discovered,
+    )
+    await udp_discovery.start()
+    logger.info(f"UDP discovery started for region '{region_name}'")
+
     yield
 
     logger.info("Journey Service shutting down...")
+    await udp_discovery.stop()
     await partition_mgr.stop()
     await health_monitor.stop()
     await close_broker()
@@ -118,7 +150,56 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.middleware("http")
+async def network_delay_middleware(request, call_next):
+    if _network_delay_ms > 0:
+        await asyncio.sleep(_network_delay_ms / 1000.0)
+    return await call_next(request)
+
+
 app.include_router(router)
+
+
+@app.get("/api/region")
+async def get_region_info():
+    """Return this node's region info and connected peers."""
+    peers = udp_discovery.get_peers() if udp_discovery else {}
+    return {
+        "region_name": os.getenv("REGION_NAME", "Dublin"),
+        "journey_service_url": udp_discovery.journey_service_url if udp_discovery else "",
+        "peers": {
+            name: {
+                "region_name": peer.region_name,
+                "journey_service_url": peer.journey_service_url,
+                "last_seen_s_ago": round(time.monotonic() - peer.last_seen, 1),
+                "graph_summary": peer.graph_summary,
+            }
+            for name, peer in peers.items()
+        },
+        "graph_summary": {"type": "road_network", "region": os.getenv("REGION_NAME", "Dublin")},
+    }
+
+
+@app.post("/admin/simulate/delay")
+async def set_network_delay(payload: dict):
+    """
+    Inject artificial network delay on incoming requests.
+    Body: {"delay_ms": 200}  — set to 0 to disable.
+    """
+    global _network_delay_ms
+    delay = int(payload.get("delay_ms", 0))
+    _network_delay_ms = max(0, delay)
+    logger.info(f"[SIMULATION] Network delay set to {_network_delay_ms}ms")
+    return {
+        "status": "ok",
+        "delay_ms": _network_delay_ms,
+        "message": f"All incoming requests will be delayed by {_network_delay_ms}ms" if _network_delay_ms else "Delay disabled",
+    }
+
+
+@app.get("/admin/simulate/delay")
+async def get_network_delay():
+    return {"delay_ms": _network_delay_ms}
 
 
 @app.get("/health")
@@ -129,7 +210,7 @@ async def health_check():
     return HealthResponse(
         status="healthy",
         service="journey-service",
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
 
 
@@ -266,5 +347,5 @@ async def rebuild_cache():
         decode_responses=True,
     )
     count = await rebuild_enforcement_cache(enforcement_redis, async_session)
-    await enforcement_redis.aclose()
+    await enforcement_redis.close()
     return {"status": "success", "journeys_cached": count}

@@ -18,6 +18,9 @@ let predefinedRoutes = [];
 let roadNetworkLayer = null;
 let roadNetworkVisible = true;
 
+// Tracks whether this node is in simulated failure — used by the peer health grid
+let _selfNodeFailed = false;
+
 // Route colour palette (one per predefined route)
 const ROUTE_COLORS = ['#00b4d8', '#f77f00', '#06d6a0', '#e63946', '#8338ec', '#ffbe0b'];
 
@@ -206,6 +209,13 @@ function setupGeoInput(inputId, resultsId, onSelect) {
         setTimeout(() => { results.style.display = 'none'; }, 200);
     });
 
+    // Enter key: auto-select the first autocomplete result
+    input.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter') return;
+        const first = results.querySelector('.autocomplete-item:not(.no-results)');
+        if (first) { e.preventDefault(); first.dispatchEvent(new MouseEvent('mousedown')); }
+    });
+
     input.addEventListener('focus', () => {
         if (results.innerHTML) results.style.display = 'block';
     });
@@ -256,8 +266,8 @@ async function geocodeSearch(query, resultsEl, inputEl, onSelect) {
 
 async function bookJourney(e) {
     e.preventDefault();
-    if(!selectedOrigin) return showToast("Please search and select an origin location", "error");
-    if(!selectedDest) return showToast("Please search and select a destination location", "error");
+    if(!selectedOrigin) return showToast("Pick an origin: use the Quick Route dropdown, or type a city and click a result from the list", "error");
+    if(!selectedDest) return showToast("Pick a destination: use the Quick Route dropdown, or type a city and click a result from the list", "error");
 
     const vehicleSelect = document.getElementById('j-vehicle');
     const selectedVehicle = vehicleSelect.value;
@@ -664,6 +674,8 @@ async function loadNodeHealth() {
             const el = document.getElementById(id);
             if (el) el.innerHTML = html;
         });
+        // Re-inject self card on top (loadSimStats may not have run yet)
+        updateSelfPeerCard();
     } catch(err) {
         console.warn('Node health fetch failed:', err);
     }
@@ -703,7 +715,37 @@ async function loadSimStats() {
         const recBtn = document.getElementById('btn-recover-node');
         if (killBtn) killBtn.disabled = !!data.node_failed;
         if (recBtn) recBtn.disabled = !data.node_failed;
+
+        // Mirror node_failed into peer health grids
+        _selfNodeFailed = !!data.node_failed;
+        updateSelfPeerCard();
     } catch(e) { console.warn('loadSimStats:', e); }
+}
+
+// Injects/updates a "THIS NODE" card at the top of both peer health grids.
+// Called by loadSimStats (which knows node_failed state) and loadNodeHealth.
+function updateSelfPeerCard() {
+    const color  = _selfNodeFailed ? '#e63946' : '#06d6a0';
+    const status = _selfNodeFailed ? 'DEAD'    : 'ALIVE';
+    const detail = _selfNodeFailed ? '⚠ simulated failure — /health returns 503' : 'running normally';
+    ['node-health-grid', 'sim-node-health-grid'].forEach(id => {
+        const grid = document.getElementById(id);
+        if (!grid) return;
+        let card = grid.querySelector('[data-self-node]');
+        if (!card) {
+            card = document.createElement('div');
+            card.setAttribute('data-self-node', '1');
+            grid.insertBefore(card, grid.firstChild);
+        }
+        card.style.cssText = `background:var(--card-bg);border:2px solid ${color};border-radius:8px;padding:12px`;
+        card.innerHTML = `
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;word-break:break-all">
+                journey-service
+                <span style="font-size:10px;background:${color}33;color:${color};padding:1px 6px;border-radius:3px;margin-left:4px">THIS NODE</span>
+            </div>
+            <div style="font-weight:700;color:${color};font-size:15px;margin-bottom:4px">${status}</div>
+            <div style="font-size:11px;color:var(--text-muted)">${detail}</div>`;
+    });
 }
 
 function simLog(msg, type = 'info') {
