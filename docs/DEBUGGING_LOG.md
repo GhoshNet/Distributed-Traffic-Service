@@ -288,3 +288,93 @@ scheduled journeys to complete.
 4. The `route_id` column was manually added to the live DB — any fresh `docker compose down -v && up` will need it again (it's in the ORM model but not in an init SQL)
 5. Analytics endpoint is `/api/analytics/stats`, not `/summary`
 6. Enforcement endpoint requires `ENFORCEMENT_AGENT` role — register via `/api/users/register/agent`
+7. Multi-device: always recreate nginx with **absolute paths** — `docker compose -f /absolute/path/docker-compose.yml -f /absolute/path/docker-compose.slim.yml up -d --no-build api-gateway-1` — using relative paths leaves the container with no network attachments
+
+---
+
+## Bug 5 — Multi-Laptop Peer Registration Broken (`/admin/peers/register` → 404)
+
+**Symptom**  
+`POST /api/peers/register` through gateway returns 404. Frontend shows "Registered peer 'undefined' → undefined" plus a `toastCounter` JS error.
+
+**Root causes**
+
+1. **nginx variable proxy_pass drops URI suffix** — `proxy_pass http://$var/path/` replaces the matched location with the static path but does NOT append the remaining URI. Request `/admin/peers/register` → nginx sent `/admin/peers/` to journey-service → FastAPI 404.
+
+2. **nginx container had no networks** — when stopping/recreating the gateway using relative docker-compose file paths, Docker Compose cannot reliably attach the container to `journey-net`. The container starts but fails DNS resolution for upstream services (emerg: host not found in upstream).
+
+3. **`toastCounter` TDZ error** — `let toastCounter = 0` was declared at line ~884 in app.js. Any call to `showToast()` from a WebSocket event or early async error before the script fully executed hit the Temporal Dead Zone. 
+
+4. **Frontend label wrong** — peer URL hint said `/health/nodes` but the health monitor pings `/health` (which returns 503 on failure simulation).
+
+**Fixes applied**
+
+Fix nginx variable proxy_pass for health/admin locations (use `proxy_pass http://$journey_svc` with no path — full URI is forwarded unchanged):
+```nginx
+location = /health {
+    set $journey_svc "journey-service:8000";
+    proxy_pass http://$journey_svc;   # ← no path suffix
+    ...
+}
+location /admin/ {
+    set $journey_svc "journey-service:8000";
+    proxy_pass http://$journey_svc;   # ← no path suffix
+    ...
+}
+```
+
+Fix nginx recreate — always use absolute paths AND check for port conflicts (haproxy grabs 8080 in some states):
+```bash
+# Stop anything on port 8080 first
+docker stop excercise2-haproxy-1 2>/dev/null || true
+docker rm -f excercise2-api-gateway-1-1 2>/dev/null || true
+docker compose -f /Users/tanmay/Documents/TCD_Course_Material/DS/Excercise2/docker-compose.yml \
+               -f /Users/tanmay/Documents/TCD_Course_Material/DS/Excercise2/docker-compose.slim.yml \
+               up -d --no-build api-gateway-1
+```
+
+Fix JS TDZ — moved `let toastCounter = 0` to the top of app.js with the other global declarations.
+
+Fixed frontend label to say `/health` not `/health/nodes`.
+
+---
+
+## Multi-Laptop Distributed Health Monitoring — Setup Guide
+
+**Current IPs (hotspot):** Your machine: `172.20.10.10` | Peer: `172.20.10.12`
+
+**Architecture note**: Each laptop runs an independent Docker stack with its own databases. The health monitor tracks *liveness only* (ALIVE/SUSPECT/DEAD) — booking data is NOT shared across nodes. This is by design.
+
+**Peer registration is in-memory** — lost on every container restart. Re-register after each `docker compose up`.
+
+### Setup steps
+
+1. **Get your LAN IP**: `ipconfig getifaddr en0`
+2. **Verify `/health` is reachable** from the other machine: `curl http://172.20.10.10:8080/health`
+3. **Register peers** (must be done on BOTH machines):
+
+On your machine:
+```bash
+curl -X POST http://localhost:8080/admin/peers/register \
+  -H "Content-Type: application/json" \
+  -d '{"name": "peer-laptop", "health_url": "http://172.20.10.12:8080/health"}'
+```
+
+On the other laptop:
+```bash
+curl -X POST http://localhost:8080/admin/peers/register \
+  -H "Content-Type: application/json" \
+  -d '{"name": "your-laptop", "health_url": "http://172.20.10.10:8080/health"}'
+```
+
+4. **Check within 10 seconds**: `curl http://localhost:8080/health/nodes | python3 -m json.tool`
+   - Peer should show `"status": "ALIVE"`
+5. **Test failure simulation**: `curl -X POST http://localhost:8080/admin/simulate/fail`
+   - Other laptop should show your node as SUSPECT in ~30s, DEAD in ~60s
+6. **Recover**: `curl -X POST http://localhost:8080/admin/simulate/recover`
+
+### If peer stays DEAD
+
+- macOS firewall blocking port 8080 → System Settings → Network → Firewall → allow incoming
+- Test connectivity: `curl --connect-timeout 5 http://172.20.10.12:8080/health`
+- nginx stale IP → recreate gateway container (see command above)

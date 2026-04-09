@@ -8,6 +8,7 @@ let wsConn = null;
 let mapInstance = null;
 let markers = {};
 let layerGroup = null;
+let toastCounter = 0;
 
 // Geocoding state — stores the selected location objects
 let selectedOrigin = null;
@@ -881,7 +882,6 @@ async function simRebuildCache() {
 // =============================================
 // Toast notification system
 // =============================================
-let toastCounter = 0;
 function showToast(message, type = "info") {
     toastCounter++;
     const id = `toast-${toastCounter}`;
