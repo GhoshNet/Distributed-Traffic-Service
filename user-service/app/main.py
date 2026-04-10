@@ -2,7 +2,9 @@
 User Service - FastAPI application entry point.
 """
 
+import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime
 
@@ -46,7 +48,6 @@ async def lifespan(app: FastAPI):
     if peers:
         for peer in peers:
             async def _sync(p=peer):
-                import asyncio
                 await asyncio.sleep(5)  # wait for own DB to be fully ready
                 await sync_from_peer(p, async_session)
             asyncio.create_task(_sync())
