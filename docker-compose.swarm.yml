@@ -27,14 +27,10 @@ services:
     volumes:
     - ./api-gateway/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
-      user-service:
-        condition: service_healthy
-      journey-service:
-        condition: service_healthy
-      enforcement-service:
-        condition: service_healthy
-      analytics-service:
-        condition: service_healthy
+    - user-service
+    - journey-service
+    - enforcement-service
+    - analytics-service
     networks:
     - journey-net
     deploy:
@@ -44,14 +40,10 @@ services:
     volumes:
     - ./api-gateway/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
-      user-service:
-        condition: service_healthy
-      journey-service:
-        condition: service_healthy
-      enforcement-service:
-        condition: service_healthy
-      analytics-service:
-        condition: service_healthy
+    - user-service
+    - journey-service
+    - enforcement-service
+    - analytics-service
     networks:
     - journey-net
     deploy:
@@ -96,8 +88,7 @@ services:
 
       '
     depends_on:
-      rabbitmq:
-        condition: service_healthy
+    - rabbitmq
     healthcheck:
       test:
       - CMD
@@ -126,8 +117,7 @@ services:
 
       '
     depends_on:
-      rabbitmq-2:
-        condition: service_healthy
+    - rabbitmq-2
     healthcheck:
       test:
       - CMD
@@ -163,8 +153,7 @@ services:
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
       --replicaof redis 6379
     depends_on:
-      redis:
-        condition: service_healthy
+    - redis
     healthcheck:
       test:
       - CMD
@@ -187,10 +176,8 @@ services:
     ports:
     - 26379:26379
     depends_on:
-      redis:
-        condition: service_healthy
-      redis-replica:
-        condition: service_healthy
+    - redis
+    - redis-replica
     restart: unless-stopped
     networks:
     - journey-net
@@ -203,10 +190,8 @@ services:
 
       '
     depends_on:
-      redis:
-        condition: service_healthy
-      redis-replica:
-        condition: service_healthy
+    - redis
+    - redis-replica
     restart: unless-stopped
     networks:
     - journey-net
@@ -219,10 +204,8 @@ services:
 
       '
     depends_on:
-      redis:
-        condition: service_healthy
-      redis-replica:
-        condition: service_healthy
+    - redis
+    - redis-replica
     restart: unless-stopped
     networks:
     - journey-net
@@ -259,8 +242,7 @@ services:
       \ -U users_user -D /var/lib/postgresql/data -Fp -Xs -P -R\nfi\nexec postgres\
       \ -c hot_standby=on\n\"\n"
     depends_on:
-      postgres-users:
-        condition: service_healthy
+    - postgres-users
     healthcheck:
       test:
       - CMD-SHELL
@@ -305,8 +287,7 @@ services:
       \ -U journeys_user -D /var/lib/postgresql/data -Fp -Xs -P -R\nfi\nexec postgres\
       \ -c hot_standby=on\n\"\n"
     depends_on:
-      postgres-journeys:
-        condition: service_healthy
+    - postgres-journeys
     healthcheck:
       test:
       - CMD-SHELL
@@ -351,8 +332,7 @@ services:
       \ -U conflicts_user -D /var/lib/postgresql/data -Fp -Xs -P -R\nfi\nexec postgres\
       \ -c hot_standby=on\n\"\n"
     depends_on:
-      postgres-conflicts:
-        condition: service_healthy
+    - postgres-conflicts
     healthcheck:
       test:
       - CMD-SHELL
@@ -397,8 +377,7 @@ services:
       \ -U analytics_user -D /var/lib/postgresql/data -Fp -Xs -P -R\nfi\nexec postgres\
       \ -c hot_standby=on\n\"\n"
     depends_on:
-      postgres-analytics:
-        condition: service_healthy
+    - postgres-analytics
     healthcheck:
       test:
       - CMD-SHELL
@@ -421,12 +400,9 @@ services:
       JWT_SECRET: keefkfwjNBEFINoodwoedibIOEJFKWNFIjjjdIIIOOP
       SERVICE_NAME: user-service
     depends_on:
-      postgres-users:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
+    - postgres-users
+    - redis
+    - rabbitmq
     healthcheck:
       test:
       - CMD
@@ -454,12 +430,9 @@ services:
       JWT_SECRET: keefkfwjNBEFINoodwoedibIOEJFKWNFIjjjdIIIOOP
       SERVICE_NAME: journey-service
     depends_on:
-      postgres-journeys:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
+    - postgres-journeys
+    - redis
+    - rabbitmq
     healthcheck:
       test:
       - CMD
@@ -485,12 +458,9 @@ services:
       JWT_SECRET: keefkfwjNBEFINoodwoedibIOEJFKWNFIjjjdIIIOOP
       SERVICE_NAME: conflict-service
     depends_on:
-      postgres-conflicts:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
+    - postgres-conflicts
+    - redis
+    - rabbitmq
     healthcheck:
       test:
       - CMD
@@ -515,10 +485,8 @@ services:
       JWT_SECRET: keefkfwjNBEFINoodwoedibIOEJFKWNFIjjjdIIIOOP
       SERVICE_NAME: notification-service
     depends_on:
-      redis:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
+    - redis
+    - rabbitmq
     healthcheck:
       test:
       - CMD
@@ -546,10 +514,8 @@ services:
       JWT_SECRET: keefkfwjNBEFINoodwoedibIOEJFKWNFIjjjdIIIOOP
       SERVICE_NAME: enforcement-service
     depends_on:
-      redis:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
+    - redis
+    - rabbitmq
     healthcheck:
       test:
       - CMD
@@ -577,12 +543,9 @@ services:
       AUDIT_HMAC_SECRET: auditChain9X2mPlQ7vRz4KdW8sFnE3bY
       SERVICE_NAME: analytics-service
     depends_on:
-      postgres-analytics:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
+    - postgres-analytics
+    - redis
+    - rabbitmq
     healthcheck:
       test:
       - CMD
@@ -598,18 +561,6 @@ services:
     image: 127.0.0.1:5000/analytics-service:latest
     deploy:
       replicas: 2
-  registry:
-    image: registry:2
-    ports:
-    - 5000:5000
-    volumes:
-    - registry_data:/var/lib/registry
-    networks:
-    - journey-net
-    deploy:
-      placement:
-        constraints:
-        - node.role == manager
 volumes:
   rabbitmq_data: null
   rabbitmq_data_2: null
@@ -623,7 +574,6 @@ volumes:
   pg_conflicts_replica_data: null
   pg_analytics_data: null
   pg_analytics_replica_data: null
-  registry_data: null
 networks:
   journey-net:
     driver: overlay
