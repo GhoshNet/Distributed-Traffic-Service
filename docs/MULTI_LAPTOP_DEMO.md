@@ -31,7 +31,7 @@ Before you start testing, know what the two topbar indicators mean:
 | `● Live Data` (green dot) | WebSocket connection for push notifications (toasts + live map). Goes grey while reconnecting. | **No.** Bookings work whether this is green or grey. |
 | `🟢 Primary` | Your own backend node is handling your requests. Each user sees their **own** node as Primary — this is correct, not shared. | Yes — switches to `⚡ Failover: <peer-ip>` when your node is down and requests are routed to the peer. |
 
-**If the Quick Route dropdown is empty:** The routes failed to load at login (conflict-service wasn't ready yet). Fix: click away to another tab and back to **Journeys** — it retries automatically.
+**If the Quick Route dropdown is empty:** The routes failed to load at login (conflict-service wasn't ready yet). Fix: click away to another tab and back to **Journeys** — it retries automatically
 
 ---
 
