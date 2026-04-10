@@ -271,6 +271,23 @@ async def drain_outbox():
     return {"status": "success", "events_drained": count}
 
 
+@app.get("/admin/logs")
+async def get_logs(limit: int = 200):
+    """
+    Return recent log entries from this node's ring buffer.
+    Used by the frontend to aggregate logs from all nodes into a unified activity feed.
+    Always returns 200 — if node is failed, logs are still readable for diagnostics.
+    """
+    from shared.config import get_recent_logs
+    entries = get_recent_logs(limit)
+    return {
+        "node": os.environ.get("HOSTNAME", "journey-service"),
+        "service": "journey-service",
+        "entries": entries,
+        "count": len(entries),
+    }
+
+
 @app.post("/admin/recovery/rebuild-enforcement-cache")
 async def rebuild_cache():
     """

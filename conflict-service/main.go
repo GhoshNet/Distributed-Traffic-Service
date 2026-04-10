@@ -16,7 +16,8 @@ import (
 func main() {
 	cfg := loadConfig()
 	log.SetFlags(log.LstdFlags)
-	log.Printf("[%s] starting up...", cfg.ServiceName)
+	initLogBuffer() // must be before any log.Printf — captures all subsequent log output
+	log.Printf("[%s] starting up... node=%s", cfg.ServiceName, logNodeID)
 
 	peerConflictURLs = cfg.PeerConflictURLs
 	if len(peerConflictURLs) > 0 {
@@ -64,6 +65,7 @@ func main() {
 	r.Post("/internal/slots/replicate", replicateSlotHandler) // push a single new slot
 	r.Post("/internal/slots/cancel", replicateCancelHandler)  // push a cancellation
 	r.Post("/internal/peers/register", addPeerHandler)        // add peer at runtime
+	r.Get("/admin/logs", logsHandler)                         // cross-node log aggregation
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.Port,

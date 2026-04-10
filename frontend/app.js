@@ -123,7 +123,7 @@ function go(view) {
     loadJourneys();
   }
   if(view === 'dash') { loadDashboard(); startNodeHealthPolling(); }
-  if(view === 'journeys') { loadJourneys(); loadVehicles(); }
+  if(view === 'journeys') { loadJourneys(); loadVehicles(); if(predefinedRoutes.length === 0) loadPredefinedRoutes(); }
   if(view === 'simulate') startNodeHealthPolling();
 }
 
@@ -729,11 +729,94 @@ function startNodeHealthPolling() {
     stopNodeHealthPolling();
     loadNodeHealth();
     loadSimStats();
+    loadActivityFeed();
     _nodeHealthTimer = setInterval(() => { loadNodeHealth(); loadSimStats(); }, 10000);
+    _activityTimer   = setInterval(() => loadActivityFeed(), 5000);
 }
 
 function stopNodeHealthPolling() {
     if (_nodeHealthTimer) { clearInterval(_nodeHealthTimer); _nodeHealthTimer = null; }
+    if (_activityTimer)   { clearInterval(_activityTimer);   _activityTimer = null; }
+}
+
+// ── Cross-node Distributed Activity Feed ─────────────────────────────────────
+// Polls /admin/logs from this node AND every ALIVE peer node.
+// Merges all entries sorted by timestamp and renders them in #activity-feed.
+
+let _activityTimer = null;
+let _activityLastRender = '';  // dedup — skip DOM update if nothing changed
+
+async function loadActivityFeed() {
+    const allBases = [API, ...activePeerAPIs.filter(p => p !== API)];
+    const allEntries = [];
+    let nodesReached = 0;
+
+    // Fetch logs from every node in parallel
+    const fetches = allBases.map(async base => {
+        try {
+            const opts = { headers: { 'Authorization': `Bearer ${token}` } };
+            const resp = await fetch(base + '/admin/logs?limit=150', opts);
+            if (!resp.ok) return;
+            const data = await resp.json();
+            (data.entries || []).forEach(e => allEntries.push(e));
+            nodesReached++;
+        } catch (_) {}
+    });
+    await Promise.all(fetches);
+
+    if (nodesReached === 0) return;  // all offline, keep last render
+
+    // Sort all entries by timestamp (ISO strings sort lexicographically)
+    allEntries.sort((a, b) => a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0);
+
+    // Keep last 300 entries
+    const entries = allEntries.slice(-300);
+
+    // Build HTML
+    const html = entries.map(e => {
+        const t = e.ts ? e.ts.replace('T', ' ').replace(/\.\d+Z$/, 'Z') : '';
+        const node = (e.node || '?').slice(0, 12).padEnd(12);
+        const svc  = (e.service || '').slice(0, 20).padEnd(20);
+        const lvl  = (e.level || 'INFO').slice(0, 5).padEnd(5);
+        const msg  = e.msg || '';
+
+        const lvlColors = { ERROR: '#e63946', WARN: '#ffbe0b', WARNING: '#ffbe0b', INFO: '#aaa', DEBUG: '#666' };
+        const color = lvlColors[lvl.trim()] || '#aaa';
+
+        // Highlight replication/sync/conflict keywords
+        const highlight = (s) => s
+            .replace(/\[replication\]/g, '<span style="color:#8338ec">[replication]</span>')
+            .replace(/\[sync\]/g, '<span style="color:#00b4d8">[sync]</span>')
+            .replace(/CONFIRMED/g, '<span style="color:#06d6a0">CONFIRMED</span>')
+            .replace(/REJECTED/g, '<span style="color:#e63946">REJECTED</span>')
+            .replace(/PUSH/g, '<span style="color:#8338ec">PUSH</span>')
+            .replace(/RECV/g, '<span style="color:#00b4d8">RECV</span>')
+            .replace(/CANCEL/g, '<span style="color:#ffbe0b">CANCEL</span>')
+            .replace(/CATCH-UP/g, '<span style="color:#00b4d8">CATCH-UP</span>')
+            .replace(/SIMULATION/g, '<span style="color:#ff1744">SIMULATION</span>');
+
+        return `<span style="color:${color}"><span style="color:#555">${t}</span> <span style="color:#888">${node}</span> <span style="color:#666">${lvl}</span> ${highlight(msg)}</span>`;
+    }).join('\n');
+
+    // Only update DOM if content changed (avoid scroll-jump)
+    const key = html.length + (entries[entries.length - 1]?.ts || '');
+    if (key === _activityLastRender) return;
+    _activityLastRender = key;
+
+    const feedEl = document.getElementById('activity-feed');
+    if (!feedEl) return;
+    const wasAtBottom = feedEl.scrollHeight - feedEl.scrollTop <= feedEl.clientHeight + 40;
+    feedEl.innerHTML = html || '<span style="color:#555">No log entries yet.</span>';
+    if (wasAtBottom) feedEl.scrollTop = feedEl.scrollHeight;
+
+    const countEl = document.getElementById('activity-node-count');
+    if (countEl) countEl.textContent = `${nodesReached}/${allBases.length} node${allBases.length > 1 ? 's' : ''}`;
+}
+
+function clearActivityFeed() {
+    _activityLastRender = '';
+    const el = document.getElementById('activity-feed');
+    if (el) el.innerHTML = '<span style="color:#555">Cleared.</span>';
 }
 
 async function loadNodeHealth() {

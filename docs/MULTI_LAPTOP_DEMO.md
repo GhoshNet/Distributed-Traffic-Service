@@ -18,7 +18,20 @@ Write them down:
 **Requirements on both machines:**
 - Docker Desktop installed and running
 - Both laptops on the **same Wi-Fi / hotspot**
-- macOS Firewall off, or ports 8003 and 8080 allowed
+- macOS Firewall off, or ports **8003** and **8080** allowed
+
+---
+
+## Understanding the UI Indicators
+
+Before you start testing, know what the two topbar indicators mean:
+
+| Indicator | What it means | Does it affect bookings? |
+|-----------|--------------|--------------------------|
+| `● Live Data` (green dot) | WebSocket connection for push notifications (toasts + live map). Goes grey while reconnecting. | **No.** Bookings work whether this is green or grey. |
+| `🟢 Primary` | Your own backend node is handling your requests. Each user sees their **own** node as Primary — this is correct, not shared. | Yes — switches to `⚡ Failover: <peer-ip>` when your node is down and requests are routed to the peer. |
+
+**If the Quick Route dropdown is empty:** The routes failed to load at login (conflict-service wasn't ready yet). Fix: click away to another tab and back to **Journeys** — it retries automatically.
 
 ---
 
@@ -65,7 +78,7 @@ docker compose \
 
 ### ⚠️ IMPORTANT — If port 8080 fails after gateway recreate
 
-Recreating `api-gateway-1` can silently stop `frontend` and `notification-service` (they're not in its `depends_on` chain but get caught in Docker's reconcile). Nginx will crash-loop if `notification-service` is missing. **Always run this after any gateway recreate:**
+Recreating `api-gateway-1` can silently stop `frontend` and `notification-service`. Nginx crash-loops if `notification-service` is missing. **Always run this after any gateway recreate:**
 
 ```bash
 docker compose \
@@ -79,25 +92,17 @@ To confirm everything is back:
 ```bash
 docker ps --format "table {{.Names}}\t{{.Status}}" | grep -E "frontend|notification|gateway"
 ```
-> All three should show `Up` — if any shows `Exited` the command above will fix it.
+> All three should show `Up`.
 
 ---
 
 ### Step 5 — Confirm everything is healthy
 ```bash
 curl http://localhost:8080/health
-```
-> Should return `{"status":"healthy",...}` — gateway is up and routing correctly.
-
-```bash
 curl http://localhost:8003/health
-```
-> Should return `{"status":"healthy",...}` — conflict-service is up directly.
-
-```bash
 docker logs excercise2-conflict-service-1 2>&1 | grep -E "peer|sync"
 ```
-> Should show: `Cross-node replication enabled — peers: [http://<LAPTOP_B_IP>:8003]`
+> Last command should show: `Cross-node replication enabled — peers: [http://<LAPTOP_B_IP>:8003]`
 
 ---
 
@@ -105,7 +110,7 @@ docker logs excercise2-conflict-service-1 2>&1 | grep -E "peer|sync"
 ```
 http://localhost:3000
 ```
-> Open this in your browser. The app auto-connects to your own backend.
+> Open this in your browser. Hard-refresh first (`Cmd+Shift+R`) to clear any cached JS.
 
 ---
 ---
@@ -116,40 +121,32 @@ http://localhost:3000
 ```bash
 git clone https://github.com/GhoshNet/Distributed-Traffic-Service.git Excercise2
 ```
-> Downloads the full project from GitHub.
-
----
 
 ### Step 2 — Go into the project folder
 ```bash
 cd Excercise2
 ```
-> Moves into the project directory.
-
----
 
 ### Step 3 — Switch to the correct branch
 ```bash
 git checkout approach3
 ```
-> Switches to the branch with all the distributed systems features.
-
----
 
 ### Step 4 — Set the peer URL pointing back to Laptop A
 ```bash
 export PEER_CONFLICT_URLS=http://<LAPTOP_A_IP>:8003
 ```
-> Tells this conflict-service to replicate bookings to Laptop A.  
 > Replace `<LAPTOP_A_IP>` with Laptop A's actual IP.
 
 ---
 
-### Step 5 — Build the conflict-service image
+### Step 5 — Build the services
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.slim.yml build conflict-service
+docker compose -f docker-compose.yml -f docker-compose.slim.yml build conflict-service journey-service
 ```
-> Compiles the Go conflict-service binary with the replication code baked in. Takes ~30s.
+> Builds the two services that have distributed-systems logic. Takes ~60s.  
+> `conflict-service` = Go binary with slot replication + log buffer.  
+> `journey-service` = Python with failover simulation + log buffer.
 
 ---
 
@@ -157,7 +154,7 @@ docker compose -f docker-compose.yml -f docker-compose.slim.yml build conflict-s
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.slim.yml up -d
 ```
-> Starts all 6 microservices + databases + RabbitMQ + Redis + nginx in the background.
+> Starts all 6 microservices + databases + RabbitMQ + Redis + nginx.
 
 ---
 
@@ -165,30 +162,21 @@ docker compose -f docker-compose.yml -f docker-compose.slim.yml up -d
 ```bash
 watch docker ps
 ```
-> Shows live container status. Wait until all containers say `healthy` (not `starting`).  
-> Press `Ctrl+C` to exit watch.
+> Wait until all containers show `healthy`. Press `Ctrl+C` to exit.
 
 ---
 
 ### Step 8 — Check all services are up
 ```bash
 curl http://localhost:8080/health
-```
-> Gateway health check — should return `{"status":"healthy"}`.
-
-```bash
 curl http://localhost:8003/health
 ```
-> Conflict-service direct health check.
-
----
 
 ### Step 9 — Confirm catch-up sync ran
 ```bash
 docker logs $(docker ps -qf "name=conflict-service" | head -1) 2>&1 | grep -E "sync|peer"
 ```
-> Should show the startup sync result, e.g.:  
-> `[sync] catch-up from http://<LAPTOP_A_IP>:8003 complete: X/X slots applied`  
+> Expected: `[sync] CATCH-UP from peer=http://<A_IP>:8003 complete: applied=N total=N`  
 > If it says `unreachable` — Laptop A is not reachable yet. Check firewall (Step 10).
 
 ---
@@ -198,10 +186,6 @@ docker logs $(docker ps -qf "name=conflict-service" | head -1) 2>&1 | grep -E "s
 System Settings → Network → Firewall → Options
 → Make sure "Block all incoming connections" is OFF
 ```
-> macOS firewall can block Docker's exposed ports from other machines on the network.  
-> If unsure, temporarily turn the firewall off for the demo.
-
----
 
 ### Step 11 — Verify Laptop A can reach you
 Run this **on Laptop A**:
@@ -209,15 +193,12 @@ Run this **on Laptop A**:
 curl http://<LAPTOP_B_IP>:8080/health
 curl http://<LAPTOP_B_IP>:8003/health
 ```
-> Both should return healthy JSON. If they fail, check firewall on Laptop B.
-
----
 
 ### Step 12 — Open the frontend
 ```
 http://localhost:3000
 ```
-> Open in Laptop B's browser. It auto-connects to Laptop B's own backend.
+> Hard-refresh (`Cmd+Shift+R`) after opening.
 
 ---
 ---
@@ -233,152 +214,207 @@ http://localhost:3000
 **On Laptop A browser:**
 
 1. Go to `http://localhost:3000`
-2. Click **Register** tab
-3. Fill in:
-   - Full Name: `Alice Driver`
-   - Email: `alice@test.com`
-   - License: `LIC-001`
-   - Password: `password123`
-4. Click **Create Account**
-5. Switch to **Sign In** tab, log in with those credentials
-6. Go to **Journeys** tab (🛣️ in sidebar)
-7. Click **My Vehicles → + Add**
-   - Registration: `ALICE-01`
-   - Type: `CAR`
-   - Click **Register Vehicle**
+2. Click **Register** tab → fill in:
+   - Full Name: `Alice Driver` | Email: `alice@test.com` | License: `LIC-001` | Password: `password123`
+3. Click **Create Account** → switch to **Sign In** → log in
+4. Go to **Journeys** tab → **My Vehicles → + Add**
+   - Registration: `ALICE-01` | Type: `CAR` → **Register Vehicle**
 
 **On Laptop B browser:**
 
 1. Go to `http://<LAPTOP_B_IP>:3000`
-2. Click **Register** tab
-3. Fill in:
-   - Full Name: `Bob Driver`
-   - Email: `bob@test.com`
-   - License: `LIC-002`
-   - Password: `password123`
-4. Click **Create Account**
-5. Switch to **Sign In** tab, log in
-6. Go to **Journeys** tab
-7. Click **My Vehicles → + Add**
-   - Registration: `BOB-01`  ← must be different from Alice's
-   - Type: `CAR`
-   - Click **Register Vehicle**
+2. Click **Register** → fill in:
+   - Full Name: `Bob Driver` | Email: `bob@test.com` | License: `LIC-002` | Password: `password123`
+3. Log in → **Journeys** tab → **My Vehicles → + Add**
+   - Registration: `BOB-01` ← **must be different from Alice's** | Type: `CAR`
 
 ---
 
 ### PART 2 — Cross-Node Conflict Test
 
-> This proves that a booking on Laptop A is visible to Laptop B's conflict-service.
+> Proves that a booking on Node A blocks the same slot on Node B.
 
 **On BOTH browsers — set up the same journey:**
-
-In the **Book New Journey** form:
-- **Quick Route** → select `Dublin → Galway (M6)`  ← same on both!
-- **Departure** → pick the same date/time on both, e.g. `tomorrow at 10:00`
-- **Duration** → leave as `135` (auto-filled)
-- **Vehicle** → select your own vehicle (`ALICE-01` / `BOB-01`)
+- **Quick Route** → `Dublin → Galway (M6)` ← same on both
+- **Departure** → same date/time on both (e.g. tomorrow at 10:00)
+- **Duration** → leave as auto-filled (135 min)
+- **Vehicle** → your own vehicle
 - **Protocol** → `Saga (default)`
 
-**Fire the bookings:**
-
-1. **Laptop A** clicks **Submit Request** first
-   - ✅ Expected: green toast — `Journey booked successfully!` with status `CONFIRMED`
-
+**Fire:**
+1. **Laptop A** submits first → ✅ green toast: `Journey booked! (CONFIRMED)`
 2. Wait **2–3 seconds** (replication is async, usually <200ms on LAN)
+3. **Laptop B** submits → ❌ red toast: `Rejected: Road segment fully booked at 10:00 UTC`
 
-3. **Laptop B** clicks **Submit Request**
-   - ❌ Expected: red toast — `Rejected: Road segment (XX.XX, XX.XX) is fully booked at 10:00 UTC`
+> Node A's booking was pushed to Node B's conflict-service DB via REST replication before Node B
+> submitted. Two independent nodes, one consistent conflict state.
 
-> **What just happened:** Laptop A's booking was replicated to Laptop B's conflict-service database  
-> before Laptop B submitted. When Laptop B's conflict-service checked, it found Laptop A's slot  
-> and rejected the duplicate booking. Two independent nodes, one consistent conflict state.
+**Verify in the Activity Feed** (Simulate tab → Distributed Activity Feed):
+- You should see `[replication] PUSH slot=... vehicle=ALICE-01 ... → peer=http://...` on Node A
+- And `[replication] RECV slot=... vehicle=ALICE-01 ... — applying locally` on Node B
 
 ---
 
 ### PART 3 — Node Failure & Recovery Demo
 
-> This demonstrates the ALIVE → SUSPECT → DEAD health model.
+> Demonstrates ALIVE → SUSPECT → DEAD health model.
 
 **Register each other as health peers first:**
 
-On Laptop A's frontend → **Simulate tab** (⚡ in sidebar):
-- Scroll to **Register Remote Peer (Multi-Device)**
-- Name: `bob-node`
-- Health URL: `http://<LAPTOP_B_IP>:8080/health`
-- Click **+ Add Peer**
+On Laptop A → **Simulate tab** → **Register Remote Peer**:
+- Name: `bob-node` | Health URL: `http://<LAPTOP_B_IP>:8080/health` → **+ Add Peer**
 
-On Laptop B's frontend → same section:
-- Name: `alice-node`
-- Health URL: `http://<LAPTOP_A_IP>:8080/health`
-- Click **+ Add Peer**
+On Laptop B → same:
+- Name: `alice-node` | Health URL: `http://<LAPTOP_A_IP>:8080/health` → **+ Add Peer**
 
-**Verify both see each other:**
-- Both frontends should show the peer card with status `ALIVE` in the Simulate tab (auto-refreshes every 10s)
+Both frontends show the peer card as `ALIVE` (auto-refreshes every 10s).
 
 **Simulate a crash:**
 
-On **Laptop A's** Simulate tab:
-- Click **💀 Kill Node**
-- ✅ Laptop A shows: `💀 FAILED`
+On **Laptop A's** Simulate tab → **💀 Kill Node**
+- Laptop A shows: `💀 FAILED`
+- This kills **both** journey-service AND user-service on Node A — login and all booking operations return 503.
 
-Watch **Laptop B's** Simulate tab (auto-refreshes every 10s):
-- After ~30s: `alice-node` changes to `SUSPECT`
-- After ~60s: `alice-node` changes to `DEAD`
+Watch **Laptop B's** peer grid:
+- ~30s → `alice-node` → `SUSPECT`
+- ~60s → `alice-node` → `DEAD`
 
-**Recover:**
-
-On **Laptop A's** Simulate tab:
-- Click **💚 Recover Node**
-- Watch Laptop B: `alice-node` returns to `ALIVE` on the next heartbeat (~10s)
+**Recover:** Click **💚 Recover Node** → Laptop B shows `ALIVE` on next heartbeat (~10s).
 
 ---
 
-### PART 4 — Concurrent Booking Storm (single node demo)
+### PART 4 — Seamless Node Failover Demo
 
-> Shows the serializable transaction locking working under concurrent load.
+> A user on Node A can still log in and book when Node A is dead — requests transparently route to Node B.
 
-On **either laptop's** Simulate tab:
-- Click **🌪️ Concurrent Booking Storm**
-- Watch the simulation log — 10 concurrent bookings fire at once
-- Expected: some `CONFIRMED`, rest `REJECTED` — no double-booking allowed
-
----
-
-### PART 5 — Two-Phase Commit Demo
-
-> Shows the stronger consistency protocol.
-
-On **either laptop's** Simulate tab:
-- Click **🔄 Two-Phase Commit Demo**
-- Watch the log: should show `✅ 2PC COMMITTED — capacity reserved + journey confirmed atomically`
-
----
-
-### PART 6 — Seamless Node Failover Demo
-
-> This shows that if Laptop A's backend goes down, a user's browser automatically switches to Laptop B **without losing their session or getting an error**.
-
-**How it works:**  
-The frontend registers health peers via the Simulate tab. On every API call, if the primary node returns a 5xx error or is unreachable, `authFetch` automatically retries the same request against each ALIVE peer. The topbar indicator switches from `🟢 Primary` to `⚡ Failover: <peer-ip>:8080`.
-
-**Prerequisites:** Both laptops must have each other registered as health peers (Part 3 above).
+**Prerequisites:** Both nodes have each other registered as health peers (Part 3).
 
 **Run the demo:**
 
-1. On **Laptop A's** Simulate tab — click **💀 Kill Node**
-   - This makes Laptop A's `/health` return `503` and its journey endpoints return `503`
+1. On **Laptop A** → click **💀 Kill Node**
+   - Node A's health → 503, login → 503, all booking operations → 503
 
-2. On **Laptop A's browser** — go to **Journeys tab** and try to **book a new journey**
-   - Expected: the request fails on Laptop A's backend (503) → `authFetch` retries on Laptop B → booking succeeds
-   - The topbar shows: `⚡ Failover: 192.168.x.x:8080`
-   - A warning toast appears: `Node failover — now routing to 192.168.x.x:8080`
-   - The booking is **confirmed** — user experience uninterrupted
+2. On **Laptop A's browser** — try **any** of these:
+   - Log out and log back in → login routes to Node B → succeeds
+   - Go to Journeys → book a journey → books on Node B → `CONFIRMED`
+   - The topbar shows: `⚡ Failover: 172.20.10.12:8080`
+   - Toast: `Node failover — now routing to 172.20.10.12:8080`
 
-3. On **Laptop A's** Simulate tab — click **💚 Recover Node**
-   - Next API call will succeed on Laptop A again
-   - Topbar returns to: `🟢 Primary`
+3. Click **💚 Recover Node** → topbar returns to `🟢 Primary` on next call
 
-> **What this demonstrates:** Client-side failover using the peer discovery list. JWT tokens are valid on both nodes (same secret), so the session carries over. The conflict-service replication ensures the booking made during failover is visible on both nodes when the primary recovers.
+> **Why this works:** Every API call (including login/register) uses `resilientFetch` which tries the
+> primary node first. On 5xx or network error it tries each ALIVE peer in order. JWT tokens are
+> signed with the same secret on all nodes, so a session from Node A is valid on Node B.
+> The peer list is persisted in `localStorage` so failover works even at the login screen.
+
+**What about live notifications (WebSocket)?**  
+After 2 consecutive WS failures on the dead primary, the browser automatically reconnects to the
+peer's notification service. The `Live Data` dot may flicker grey for ~10s then go green again
+on the peer node.
+
+---
+
+### PART 5 — Concurrent Booking Storm
+
+> Proves serializable transaction locking prevents double-booking under load.
+
+On **either laptop's** Simulate tab → **🌪️ Concurrent Booking Storm**
+- 10 concurrent bookings fire at once for the same slot
+- Expected: exactly 1 `CONFIRMED`, rest `REJECTED` — no double-booking
+
+---
+
+### PART 6 — Two-Phase Commit Demo
+
+> Stronger consistency — atomic PREPARE → COMMIT across journey-service and conflict-service.
+
+On **either laptop's** Simulate tab → **🔄 Two-Phase Commit Demo**
+- Watch the log: `✅ 2PC COMMITTED — capacity reserved + journey confirmed atomically`
+
+---
+
+### PART 7 — Distributed Activity Feed
+
+> Shows live log output from **all nodes** merged into one view with UTC timestamps.
+
+On **either laptop's** Simulate tab → scroll down to **Distributed Activity Feed**:
+- Auto-refreshes every 5s
+- Shows logs from **this node AND all registered peer nodes**
+- Node hostname column identifies which machine produced each log line
+- Colour coding:
+  - `[replication]` purple — cross-node slot push/receive
+  - `[sync]` blue — catch-up sync activity
+  - `CONFIRMED` green / `REJECTED` red — booking outcomes
+  - `PUSH` purple — this node sending a slot to a peer
+  - `RECV` blue — this node receiving a slot from a peer
+  - `SIMULATION` red — node failure/recovery events
+
+**To see cross-node replication in real time:**  
+Make a booking on Laptop A while watching the feed on Laptop B. Within 1–2 seconds you'll see:
+```
+Node-A  [replication] PUSH slot=<id> vehicle=ALICE-01 → peer=http://<B>:8003 (HTTP 204)
+Node-B  [replication] RECV slot=<id> vehicle=ALICE-01 — applying locally
+```
+
+---
+
+## Verifying Replication at the Database Level
+
+> These commands connect directly to the PostgreSQL containers on each node.
+
+### conflicts_db — the key database for replication verification
+
+```bash
+# All active booking slots (run on BOTH nodes — should match after replication)
+docker exec excercise2-postgres-conflicts-1 psql -U conflicts_user -d conflicts_db \
+  -c "SELECT journey_id, vehicle_registration, departure_time, arrival_time, is_active, created_at
+      FROM booked_slots ORDER BY created_at DESC LIMIT 20;"
+
+# Count active slots (should be IDENTICAL on both nodes within ~1s of a booking)
+docker exec excercise2-postgres-conflicts-1 psql -U conflicts_user -d conflicts_db \
+  -c "SELECT COUNT(*) AS total, SUM(CASE WHEN is_active THEN 1 ELSE 0 END) AS active FROM booked_slots;"
+
+# Road segment capacity (how full each grid cell is per time slot)
+docker exec excercise2-postgres-conflicts-1 psql -U conflicts_user -d conflicts_db \
+  -c "SELECT round(lat::numeric,3), round(lng::numeric,3), time_slot, booking_count
+      FROM road_segment_capacity ORDER BY time_slot DESC LIMIT 20;"
+```
+
+### journeys_db — bookings made on THIS node
+
+```bash
+docker exec excercise2-postgres-journeys-1 psql -U journeys_user -d journeys_db \
+  -c "SELECT id, vehicle_registration, status, departure_time, route_id, created_at
+      FROM journeys ORDER BY created_at DESC LIMIT 20;"
+```
+
+### users_db
+
+```bash
+# Registered users
+docker exec excercise2-postgres-users-1 psql -U users_user -d users_db \
+  -c "SELECT id, email, full_name, role, created_at FROM users ORDER BY created_at DESC;"
+
+# Vehicles with owner email
+docker exec excercise2-postgres-users-1 psql -U users_user -d users_db \
+  -c "SELECT v.registration, v.vehicle_type, u.email FROM vehicles v JOIN users u ON v.user_id=u.id;"
+```
+
+### analytics_db
+
+```bash
+docker exec excercise2-postgres-analytics-1 psql -U analytics_user -d analytics_db \
+  -c "SELECT event_type, COUNT(*) FROM analytics_events GROUP BY event_type ORDER BY count DESC;"
+```
+
+### How to confirm replication is working
+
+1. Make a booking on **Laptop A**
+2. Wait 2–3 seconds
+3. Run the `booked_slots` query on **Laptop B** — Alice's booking should appear there
+4. Run the count query on both — numbers should match
+
+If Laptop B's count is lower, replication hasn't arrived yet (or `PEER_CONFLICT_URLS` wasn't set).
 
 ---
 
@@ -388,10 +424,13 @@ The frontend registers health peers via the Simulate tab. On every API call, if 
 |---------|---------------------|-----|
 | Laptop B can't reach Laptop A | `curl http://<A_IP>:8080/health` from B's terminal | Disable macOS Firewall on Laptop A |
 | Port 8080 already allocated | `docker ps \| grep 8080` | `docker stop excercise2-haproxy-1` |
-| No conflict after cross-node booking | `docker logs <conflict-container> \| grep replication` | Check `PEER_CONFLICT_URLS` was exported before `up -d` |
+| No conflict after cross-node booking | Activity Feed → look for `[replication]` lines | Check `PEER_CONFLICT_URLS` was exported before `up -d` |
 | Peer shows DEAD immediately | `curl --connect-timeout 5 http://<IP>:8080/health` | Firewall blocking — allow ports 8003 and 8080 |
-| Catch-up sync shows unreachable | `docker logs <conflict-container> \| grep sync` | Peer not started yet — run sync manually (see below) |
-| Services not healthy after `up -d` | `docker ps` | Wait 30s more; check `docker logs <service>` for errors |
+| Catch-up sync shows unreachable | Activity Feed or `docker logs <conflict>` \| grep sync | Peer not started yet — register peer manually (see below) |
+| Quick Route dropdown empty | Click away from Journeys tab and back | Conflict-service wasn't ready at login — auto-retries on tab switch |
+| Services not healthy after `up -d` | `docker ps` | Wait 30s more; `docker logs <service>` for errors |
+| Live Data dot grey | Normal during reconnect (~5–30s) | Doesn't affect bookings — WS reconnects automatically to peer if primary is down |
+| Failover not working (still on primary node) | Check Simulate tab — are peers `ALIVE`? | Register health peers first (Part 3), then try again |
 
 **Force a catch-up sync manually (without restart):**
 ```bash
@@ -401,11 +440,17 @@ curl -X POST http://localhost:8003/internal/peers/register \
 ```
 > Registers the peer live and immediately pulls all their active slots. No restart needed.
 
-**Check replication is flowing:**
+**Check replication logs:**
 ```bash
-docker logs $(docker ps -qf "name=conflict-service" | head -1) 2>&1 | tail -20
+docker logs $(docker ps -qf "name=conflict-service" | head -1) 2>&1 | grep -E "replication|sync" | tail -20
 ```
-> Look for lines like `[replication] slot <id> → http://... (HTTP 204)` after a booking.
+> Look for lines like `[replication] PUSH slot=<id> vehicle=... → peer=http://... (HTTP 204)`
+
+**View raw logs from the API:**
+```bash
+curl http://localhost:8003/admin/logs | python3 -m json.tool | grep '"msg"' | tail -20
+curl http://localhost:8080/admin/logs -H "Authorization: Bearer <token>" | python3 -m json.tool | grep '"msg"' | tail -20
+```
 
 ---
 

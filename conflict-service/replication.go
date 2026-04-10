@@ -109,7 +109,9 @@ func replicateSlotToPeers(req ConflictCheckRequest, arrivalTime time.Time) {
 				return
 			}
 			resp.Body.Close()
-			log.Printf("[replication] slot %s → %s (HTTP %d)", payload.JourneyID, base, resp.StatusCode)
+			log.Printf("[replication] PUSH slot=%s vehicle=%s route=%s depart=%s → peer=%s (HTTP %d)",
+				payload.JourneyID, payload.VehicleRegistration, payload.RouteID,
+				payload.DepartureTime.UTC().Format("15:04:05Z"), base, resp.StatusCode)
 		}()
 	}
 }
@@ -139,7 +141,7 @@ func replicateCancelToPeers(journeyID string) {
 				return
 			}
 			resp.Body.Close()
-			log.Printf("[replication] cancel %s → %s (HTTP %d)", journeyID, base, resp.StatusCode)
+			log.Printf("[replication] CANCEL journey=%s → peer=%s (HTTP %d)", journeyID, base, resp.StatusCode)
 		}()
 	}
 }
@@ -164,8 +166,12 @@ func applyReplicatedSlot(ctx context.Context, r ReplicateSlotRequest) error {
 		return err
 	}
 	if exists {
-		return nil // already present — idempotent no-op
+		log.Printf("[replication] RECV slot=%s already present — idempotent skip", r.JourneyID)
+		return nil
 	}
+	log.Printf("[replication] RECV slot=%s vehicle=%s route=%s depart=%s arrival=%s — applying locally",
+		r.JourneyID, r.VehicleRegistration, r.RouteID,
+		r.DepartureTime.UTC().Format("15:04:05Z"), r.ArrivalTime.UTC().Format("15:04:05Z"))
 
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO booked_slots
@@ -273,8 +279,8 @@ func syncFromPeer(peerURL string) {
 			applied++
 		}
 	}
-	log.Printf("[sync] catch-up from %s complete: %d/%d slots applied (rest already present)",
-		peerURL, applied, len(data.Slots))
+	log.Printf("[sync] CATCH-UP from peer=%s complete: applied=%d total=%d (skipped=%d already present)",
+		peerURL, applied, len(data.Slots), len(data.Slots)-applied)
 }
 
 // startPeriodicSync re-syncs from all peers every interval.

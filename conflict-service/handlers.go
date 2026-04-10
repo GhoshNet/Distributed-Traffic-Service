@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -146,6 +147,28 @@ func listRoutesHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"routes": routes,
 		"count":  len(routes),
+	})
+}
+
+// logsHandler returns recent log entries from the ring buffer.
+// Used by the frontend to aggregate logs from all nodes into one view.
+// GET /admin/logs?limit=100&service=conflict-service
+func logsHandler(w http.ResponseWriter, r *http.Request) {
+	limit := 200
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	entries := getRecentLogs(limit)
+	if entries == nil {
+		entries = []LogEntry{}
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"node":    logNodeID,
+		"service": "conflict-service",
+		"entries": entries,
+		"count":   len(entries),
 	})
 }
 

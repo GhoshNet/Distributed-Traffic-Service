@@ -309,6 +309,20 @@
           <div id="sim-log" style="font-family:monospace;font-size:12px;background:var(--bg);padding:12px;border-radius:6px;max-height:300px;overflow-y:auto;white-space:pre-wrap;color:var(--text-muted)">Waiting for events…</div>
         </div>
 
+        <!-- Cross-node activity feed -->
+        <div class="card" style="margin-top:16px">
+          <div class="card-title" style="display:flex;align-items:center;gap:10px;">
+            Distributed Activity Feed
+            <span id="activity-node-count" style="font-size:12px;color:var(--text-muted)"></span>
+            <span id="activity-live-dot" style="width:8px;height:8px;border-radius:50%;background:var(--success);display:inline-block;margin-left:4px" title="Live — polling all nodes every 5s"></span>
+            <button class="btn btn-sm btn-primary" onclick="clearActivityFeed()" style="margin-left:auto">Clear</button>
+          </div>
+          <div style="font-size:11px;color:var(--text-muted);margin:4px 0 8px">
+            Live log from <strong>all nodes</strong> — bookings, replication, conflicts, failovers. Auto-refreshes every 5s.
+          </div>
+          <div id="activity-feed" style="font-family:monospace;font-size:11px;background:var(--bg);padding:12px;border-radius:6px;max-height:400px;overflow-y:auto;white-space:pre-wrap;color:var(--text-muted)">Connecting to nodes…</div>
+        </div>
+
       </div>
 
     </div>
