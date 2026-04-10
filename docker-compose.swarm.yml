@@ -399,6 +399,7 @@ services:
       RABBITMQ_URL: amqp://journey_admin:journey_pass@rabbitmq:5672/journey_vhost
       JWT_SECRET: keefkfwjNBEFINoodwoedibIOEJFKWNFIjjjdIIIOOP
       SERVICE_NAME: user-service
+      PEER_USER_URLS: ${PEER_USER_URLS:-}
     depends_on:
     - postgres-users
     - redis
@@ -429,6 +430,7 @@ services:
       CONFLICT_SERVICE_URL: http://conflict-service:8000
       JWT_SECRET: keefkfwjNBEFINoodwoedibIOEJFKWNFIjjjdIIIOOP
       SERVICE_NAME: journey-service
+      PEER_CONFLICT_URLS: ${PEER_CONFLICT_URLS:-}
     depends_on:
     - postgres-journeys
     - redis
@@ -457,6 +459,7 @@ services:
       RABBITMQ_URL: amqp://journey_admin:journey_pass@rabbitmq:5672/journey_vhost
       JWT_SECRET: keefkfwjNBEFINoodwoedibIOEJFKWNFIjjjdIIIOOP
       SERVICE_NAME: conflict-service
+      PEER_CONFLICT_URLS: ${PEER_CONFLICT_URLS:-}
     depends_on:
     - postgres-conflicts
     - redis

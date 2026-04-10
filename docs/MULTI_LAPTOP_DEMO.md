@@ -1,5 +1,5 @@
 # Multi-Laptop Demo Setup Guide
-**CS7NS6 — Distributed Journey Booking System**
+**CS7NS6 — Distributed Journey Booking System (Docker Swarm)**
 
 ---
 
@@ -12,115 +12,166 @@ ipconfig getifaddr en0
 ```
 
 Write them down:
-- **Your laptop (A):** `_______________` (e.g. `172.20.10.10`)
-- **Peer laptop (B):**  `_______________` (e.g. `172.20.10.12`)
+- **Laptop A (yours):** `_______________` (e.g. `172.20.10.10`)
+- **Laptop B (peer):**  `_______________` (e.g. `172.20.10.12`)
 
 **Requirements on both machines:**
 - Docker Desktop installed and running
 - Both laptops on the **same Wi-Fi / hotspot**
-- macOS Firewall off, or ports **8003** and **8080** allowed
+- macOS Firewall off, or ports **8003**, **8080**, and **2377** allowed
+- Docker Swarm initialized (`docker info | grep Swarm` → must say `active`)
 
 ---
 
 ## Understanding the UI Indicators
 
-Before you start testing, know what the two topbar indicators mean:
-
 | Indicator | What it means | Does it affect bookings? |
 |-----------|--------------|--------------------------|
-| `● Live Data` (green dot) | WebSocket connection for push notifications (toasts + live map). Goes grey while reconnecting. | **No.** Bookings work whether this is green or grey. |
-| `🟢 Primary` | Your own backend node is handling your requests. Each user sees their **own** node as Primary — this is correct, not shared. | Yes — switches to `⚡ Failover: <peer-ip>` when your node is down and requests are routed to the peer. |
+| `● Live Data` (green dot) | WebSocket push notifications (toasts + live map). Goes grey while reconnecting. | **No.** Bookings work whether green or grey. |
+| `🟢 Primary` | Your own backend node is handling requests. Each user sees their **own** node as Primary — this is correct. | Yes — switches to `⚡ Failover: <peer-ip>` when your node is down. |
 
-**If the Quick Route dropdown is empty:** The routes failed to load at login (conflict-service wasn't ready yet). Fix: click away to another tab and back to **Journeys** — it retries automatically
+**If the Quick Route dropdown is empty:** Routes failed to load at login (conflict-service wasn't ready). Fix: click away to another tab and back to **Journeys** — it retries automatically.
 
 ---
 
-## LAPTOP A — Your Machine (stack already running)
+## LAPTOP A — Your Machine
 
-### Step 1 — Stop anything on port 8080
+### Step 1 — Clean wipe Docker (start fresh)
+
+> **Warning:** This deletes ALL data — databases, queues, volumes. Skip if you just want to redeploy.
+
 ```bash
-docker stop excercise2-haproxy-1 2>/dev/null; true
+# Remove the existing stack
+docker stack rm traffic-service
+sleep 15
+
+# Remove all volumes
+docker volume rm \
+  traffic-service_rabbitmq_data \
+  traffic-service_rabbitmq_data_2 \
+  traffic-service_rabbitmq_data_3 \
+  traffic-service_redis_data \
+  traffic-service_pg_users_data \
+  traffic-service_pg_users_replica_data \
+  traffic-service_pg_journeys_data \
+  traffic-service_pg_journeys_replica_data \
+  traffic-service_pg_conflicts_data \
+  traffic-service_pg_conflicts_replica_data \
+  traffic-service_pg_analytics_data \
+  traffic-service_pg_analytics_replica_data
+
+# Remove locally built images
+docker rmi $(docker images '127.0.0.1:5000/*' -q) 2>/dev/null || true
+docker system prune -f
 ```
-> Stops HAProxy if it grabbed port 8080 (happens in full mode).
 
 ---
 
-### Step 2 — Write the peer URLs into the .env file
+### Step 2 — Verify Swarm is initialized
+
 ```bash
-cat > /Users/tanmay/Documents/TCD_Course_Material/DS/Excercise2/.env <<EOF
+docker info | grep Swarm
+# Must say: Swarm: active
+```
+
+If not active:
+```bash
+docker swarm init
+```
+
+---
+
+### Step 3 — Write peer IP into .env
+
+```bash
+cat > .env <<EOF
 PEER_CONFLICT_URLS=http://<LAPTOP_B_IP>:8003
 PEER_USER_URLS=http://<LAPTOP_B_IP>:8080
 EOF
 ```
-> Replace `<LAPTOP_B_IP>` with Laptop B's actual IP.  
-> Docker Compose loads `.env` automatically on every `docker compose` command — so you only set this once.
+
+> Replace `<LAPTOP_B_IP>` with Laptop B's actual IP.
+> This file is loaded automatically at deploy time.
 
 ---
 
-### Step 3 — Restart services with the new peer URLs
+### Step 4 — Deploy the full stack
+
 ```bash
-docker compose \
-  -f /Users/tanmay/Documents/TCD_Course_Material/DS/Excercise2/docker-compose.yml \
-  -f /Users/tanmay/Documents/TCD_Course_Material/DS/Excercise2/docker-compose.slim.yml \
-  up -d --no-build --force-recreate conflict-service user-service journey-service
+cd /path/to/Excercise2
+
+# Export the peer env vars so docker stack deploy picks them up
+export $(cat .env | xargs)
+
+# Start the local registry if not already running
+docker service ls | grep registry || \
+  docker service create --name registry --publish published=5000,target=5000 registry:2
+sleep 5
+
+# Run the deploy script (builds all images, pushes to local registry, deploys stack)
+./deploy-swarm.sh
 ```
-> `--force-recreate` is required so Docker actually injects the new `.env` values
-> (without it, compose sees no config diff and leaves the container unchanged).
-> `journey-service` now also uses `PEER_CONFLICT_URLS` so it can fall back to the
-> peer's conflict-service if the local one is down.
+
+> The script builds all 6 services, pushes them to the local registry on port 5000, then deploys the full Swarm stack. First run takes ~2–3 minutes to build. Subsequent runs use Docker layer cache and take ~30 seconds.
 
 ---
 
-### Step 4 — Recreate the nginx gateway (clears stale IPs)
-```bash
-docker rm -f excercise2-api-gateway-1-1 2>/dev/null; true
-
-docker compose \
-  -f /Users/tanmay/Documents/TCD_Course_Material/DS/Excercise2/docker-compose.yml \
-  -f /Users/tanmay/Documents/TCD_Course_Material/DS/Excercise2/docker-compose.slim.yml \
-  up -d --no-build api-gateway-1
-```
-> Nginx caches service IPs at startup — force-recreate so it picks up the new conflict-service IP.
-
-### ⚠️ IMPORTANT — If port 8080 fails after gateway recreate
-
-Recreating `api-gateway-1` can silently stop `frontend` and `notification-service`. Nginx crash-loops if `notification-service` is missing. **Always run this after any gateway recreate:**
+### Step 5 — Monitor services coming up
 
 ```bash
-docker compose \
-  -f /Users/tanmay/Documents/TCD_Course_Material/DS/Excercise2/docker-compose.yml \
-  -f /Users/tanmay/Documents/TCD_Course_Material/DS/Excercise2/docker-compose.slim.yml \
-  up -d --no-build
+docker service ls
 ```
-> Starts any stopped containers without touching running ones. Safe to run anytime.
 
-To confirm everything is back:
+Wait until all services show `N/N` replicas (not `0/N`). Takes ~60–90 seconds for databases and RabbitMQ to be healthy. If any service is stuck:
+
 ```bash
-docker ps --format "table {{.Names}}\t{{.Status}}" | grep -E "frontend|notification|gateway"
+# See what's wrong
+docker service ps traffic-service_<service-name> --no-trunc
+
+# See logs
+docker service logs traffic-service_<service-name> --tail 50
 ```
-> All three should show `Up`.
 
 ---
 
-### Step 5 — Confirm everything is healthy
+### Step 6 — Confirm peer replication is configured
+
 ```bash
-curl http://localhost:8080/health
-curl http://localhost:8003/health
-docker logs excercise2-conflict-service-1 2>&1 | grep -E "peer|sync|replication"
-docker logs excercise2-user-service-1 2>&1 | grep -E "peer|sync|replication"
+docker service logs traffic-service_conflict-service 2>&1 | grep -E "peer|sync|replication" | tail -10
+docker service logs traffic-service_user-service 2>&1 | grep -E "peer|sync|replication" | tail -10
 ```
-> Should show:
+
+> Expected:
 > - `Cross-node replication enabled — peers: [http://<LAPTOP_B_IP>:8003]`
 > - `[user-replication] peers configured: ['http://<LAPTOP_B_IP>:8080']`
-> - `[sync] CATCH-UP from peer=... complete: applied=N total=N`
 
 ---
 
-### Step 6 — Open the frontend
+### Step 7 — Open the frontend
+
 ```
 http://localhost:3000
 ```
-> Open this in your browser. Hard-refresh first (`Cmd+Shift+R`) to clear any cached JS.
+
+Hard-refresh first (`Cmd+Shift+R`) to clear any cached JS.
+
+---
+
+### Updating peer IPs without a full redeploy
+
+If you need to change the peer IP after the stack is already running:
+
+```bash
+# Edit .env with new IP
+cat > .env <<EOF
+PEER_CONFLICT_URLS=http://<NEW_PEER_IP>:8003
+PEER_USER_URLS=http://<NEW_PEER_IP>:8080
+EOF
+
+# Re-export and redeploy (only affected services restart)
+export $(cat .env | xargs)
+docker stack deploy -c docker-compose.swarm.yml traffic-service
+```
 
 ---
 ---
@@ -128,79 +179,101 @@ http://localhost:3000
 ## LAPTOP B — Peer Machine (fresh setup)
 
 ### Step 1 — Clone the repository
+
 ```bash
 git clone https://github.com/GhoshNet/Distributed-Traffic-Service.git Excercise2
-```
-
-### Step 2 — Go into the project folder
-```bash
 cd Excercise2
 ```
 
-### Step 3 — Switch to the correct branch
+### Step 2 — Switch to the correct branch
+
 ```bash
 git checkout approach3
 ```
 
-### Step 4 — Write the peer URLs into the .env file
+### Step 3 — Verify Swarm is initialized
+
+```bash
+docker info | grep Swarm
+# Must say: Swarm: active
+```
+
+If not active:
+```bash
+docker swarm init
+```
+
+### Step 4 — Write peer IP into .env
+
 ```bash
 cat > .env <<EOF
 PEER_CONFLICT_URLS=http://<LAPTOP_A_IP>:8003
 PEER_USER_URLS=http://<LAPTOP_A_IP>:8080
 EOF
 ```
+
 > Replace `<LAPTOP_A_IP>` with Laptop A's actual IP.
 
 ---
 
-### Step 5 — Build the services
+### Step 5 — Start the local registry
+
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.slim.yml build conflict-service journey-service
+docker service ls | grep registry || \
+  docker service create --name registry --publish published=5000,target=5000 registry:2
+sleep 5
 ```
-> Builds the two services that have distributed-systems logic. Takes ~60s.  
-> `conflict-service` = Go binary with slot replication + log buffer.  
-> `journey-service` = Python with failover simulation + log buffer.
 
 ---
 
-### Step 6 — Start the full stack
+### Step 6 — Deploy the full stack
+
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.slim.yml up -d
+export $(cat .env | xargs)
+./deploy-swarm.sh
 ```
-> Starts all 6 microservices + databases + RabbitMQ + Redis + nginx.
+
+> Builds all 6 services, pushes to local registry, deploys the Swarm stack. Takes ~2–3 minutes first run.
 
 ---
 
-### Step 7 — Wait for services to become healthy (~30 seconds)
+### Step 7 — Monitor until healthy
+
 ```bash
-watch docker ps
+docker service ls
 ```
-> Wait until all containers show `healthy`. Press `Ctrl+C` to exit.
+
+Wait until all services show `N/N` replicas. Takes ~60–90 seconds.
 
 ---
 
-### Step 8 — Check all services are up
+### Step 8 — Check health endpoints
+
 ```bash
 curl http://localhost:8080/health
 curl http://localhost:8003/health
 ```
 
 ### Step 9 — Confirm catch-up sync ran
+
 ```bash
-docker logs $(docker ps -qf "name=conflict-service" | head -1) 2>&1 | grep -E "sync|peer"
+docker service logs traffic-service_conflict-service 2>&1 | grep -E "sync|peer" | tail -10
 ```
-> Expected: `[sync] CATCH-UP from peer=http://<A_IP>:8003 complete: applied=N total=N`  
+
+> Expected: `[sync] CATCH-UP from peer=http://<A_IP>:8003 complete: applied=N total=N`
 > If it says `unreachable` — Laptop A is not reachable yet. Check firewall (Step 10).
 
 ---
 
-### Step 10 — Allow incoming connections through macOS Firewall (if needed)
+### Step 10 — Allow incoming connections (if needed)
+
 ```
 System Settings → Network → Firewall → Options
 → Make sure "Block all incoming connections" is OFF
 ```
 
 ### Step 11 — Verify Laptop A can reach you
+
 Run this **on Laptop A**:
 ```bash
 curl http://<LAPTOP_B_IP>:8080/health
@@ -208,10 +281,36 @@ curl http://<LAPTOP_B_IP>:8003/health
 ```
 
 ### Step 12 — Open the frontend
+
 ```
 http://localhost:3000
 ```
-> Hard-refresh (`Cmd+Shift+R`) after opening.
+
+Hard-refresh (`Cmd+Shift+R`) after opening.
+
+---
+---
+
+## API Gateway Reference
+
+All browser API calls go through HAProxy → Nginx on port **8080**.
+
+| Service | Endpoint |
+|---------|----------|
+| Users | `http://localhost:8080/api/users/` |
+| Journeys | `http://localhost:8080/api/journeys/` |
+| Conflicts | `http://localhost:8080/api/conflicts/` |
+| Notifications | `http://localhost:8080/api/notifications/` |
+| Enforcement | `http://localhost:8080/api/enforcement/` |
+| Analytics | `http://localhost:8080/api/analytics/` |
+| Health | `http://localhost:8080/health` |
+| Frontend | `http://localhost:3000` |
+
+**View API gateway logs:**
+```bash
+docker service logs traffic-service_api-gateway-1 -f
+docker service logs traffic-service_haproxy -f
+```
 
 ---
 ---
@@ -235,7 +334,7 @@ http://localhost:3000
 
 **On Laptop B browser:**
 
-1. Go to `http://<LAPTOP_B_IP>:3000`
+1. Go to `http://localhost:3000`
 2. Click **Register** → fill in:
    - Full Name: `Bob Driver` | Email: `bob@test.com` | License: `LIC-002` | Password: `password123`
 3. Log in → **Journeys** tab → **My Vehicles → + Add**
@@ -310,20 +409,18 @@ Watch **Laptop B's** peer grid:
 2. On **Laptop A's browser** — try **any** of these:
    - Log out and log back in → login routes to Node B → succeeds
    - Go to Journeys → book a journey → books on Node B → `CONFIRMED`
-   - The topbar shows: `⚡ Failover: 172.20.10.12:8080`
-   - Toast: `Node failover — now routing to 172.20.10.12:8080`
+   - The topbar shows: `⚡ Failover: <LAPTOP_B_IP>:8080`
+   - Toast: `Node failover — now routing to <LAPTOP_B_IP>:8080`
 
 3. Click **💚 Recover Node** → topbar returns to `🟢 Primary` on next call
 
-> **Why this works:** Every API call (including login/register) uses `resilientFetch` which tries the
-> primary node first. On 5xx or network error it tries each ALIVE peer in order. JWT tokens are
-> signed with the same secret on all nodes, so a session from Node A is valid on Node B.
-> The peer list is persisted in `localStorage` so failover works even at the login screen.
+> **Why this works:** Every API call uses `resilientFetch` which tries the primary node first.
+> On 5xx or network error it tries each ALIVE peer in order. JWT tokens are signed with the same
+> secret on all nodes, so a session from Node A is valid on Node B.
 
-**What about live notifications (WebSocket)?**  
+**What about live notifications (WebSocket)?**
 After 2 consecutive WS failures on the dead primary, the browser automatically reconnects to the
-peer's notification service. The `Live Data` dot may flicker grey for ~10s then go green again
-on the peer node.
+peer's notification service. The `Live Data` dot may flicker grey for ~10s then go green again.
 
 ---
 
@@ -362,7 +459,7 @@ On **either laptop's** Simulate tab → scroll down to **Distributed Activity Fe
   - `RECV` blue — this node receiving a slot from a peer
   - `SIMULATION` red — node failure/recovery events
 
-**To see cross-node replication in real time:**  
+**To see cross-node replication in real time:**
 Make a booking on Laptop A while watching the feed on Laptop B. Within 1–2 seconds you'll see:
 ```
 Node-A  [replication] PUSH slot=<id> vehicle=ALICE-01 → peer=http://<B>:8003 (HTTP 204)
@@ -373,22 +470,29 @@ Node-B  [replication] RECV slot=<id> vehicle=ALICE-01 — applying locally
 
 ## Verifying Replication at the Database Level
 
-> These commands connect directly to the PostgreSQL containers on each node.
-
-### conflicts_db — the key database for replication verification
+> In Swarm mode, container names are auto-generated. Use `docker ps --filter` to find them.
 
 ```bash
+# Find the conflicts container name
+docker ps --filter "name=traffic-service_postgres-conflicts" --format "{{.Names}}"
+```
+
+### conflicts_db — key database for replication verification
+
+```bash
+CONFLICTS_CTR=$(docker ps --filter "name=traffic-service_postgres-conflicts\." --format "{{.Names}}" | head -1)
+
 # All active booking slots (run on BOTH nodes — should match after replication)
-docker exec excercise2-postgres-conflicts-1 psql -U conflicts_user -d conflicts_db \
+docker exec $CONFLICTS_CTR psql -U conflicts_user -d conflicts_db \
   -c "SELECT journey_id, vehicle_registration, departure_time, arrival_time, is_active, created_at
       FROM booked_slots ORDER BY created_at DESC LIMIT 20;"
 
 # Count active slots (should be IDENTICAL on both nodes within ~1s of a booking)
-docker exec excercise2-postgres-conflicts-1 psql -U conflicts_user -d conflicts_db \
+docker exec $CONFLICTS_CTR psql -U conflicts_user -d conflicts_db \
   -c "SELECT COUNT(*) AS total, SUM(CASE WHEN is_active THEN 1 ELSE 0 END) AS active FROM booked_slots;"
 
-# Road segment capacity (how full each grid cell is per time slot)
-docker exec excercise2-postgres-conflicts-1 psql -U conflicts_user -d conflicts_db \
+# Road segment capacity
+docker exec $CONFLICTS_CTR psql -U conflicts_user -d conflicts_db \
   -c "SELECT round(grid_lat::numeric,3), round(grid_lng::numeric,3), time_slot_start, current_bookings, max_capacity
       FROM road_segment_capacity ORDER BY time_slot_start DESC LIMIT 20;"
 ```
@@ -396,7 +500,9 @@ docker exec excercise2-postgres-conflicts-1 psql -U conflicts_user -d conflicts_
 ### journeys_db — bookings made on THIS node
 
 ```bash
-docker exec excercise2-postgres-journeys-1 psql -U journeys_user -d journeys_db \
+JOURNEYS_CTR=$(docker ps --filter "name=traffic-service_postgres-journeys\." --format "{{.Names}}" | head -1)
+
+docker exec $JOURNEYS_CTR psql -U journeys_user -d journeys_db \
   -c "SELECT id, vehicle_registration, status, departure_time, route_id, created_at
       FROM journeys ORDER BY created_at DESC LIMIT 20;"
 ```
@@ -404,19 +510,23 @@ docker exec excercise2-postgres-journeys-1 psql -U journeys_user -d journeys_db 
 ### users_db
 
 ```bash
+USERS_CTR=$(docker ps --filter "name=traffic-service_postgres-users\." --format "{{.Names}}" | head -1)
+
 # Registered users
-docker exec excercise2-postgres-users-1 psql -U users_user -d users_db \
+docker exec $USERS_CTR psql -U users_user -d users_db \
   -c "SELECT id, email, full_name, role, created_at FROM users ORDER BY created_at DESC;"
 
 # Vehicles with owner email
-docker exec excercise2-postgres-users-1 psql -U users_user -d users_db \
+docker exec $USERS_CTR psql -U users_user -d users_db \
   -c "SELECT v.registration, v.vehicle_type, u.email FROM vehicles v JOIN users u ON v.user_id=u.id;"
 ```
 
 ### analytics_db
 
 ```bash
-docker exec excercise2-postgres-analytics-1 psql -U analytics_user -d analytics_db \
+ANALYTICS_CTR=$(docker ps --filter "name=traffic-service_postgres-analytics\." --format "{{.Names}}" | head -1)
+
+docker exec $ANALYTICS_CTR psql -U analytics_user -d analytics_db \
   -c "SELECT event_type, COUNT(*) FROM event_logs GROUP BY event_type ORDER BY count DESC;"
 ```
 
@@ -427,7 +537,7 @@ docker exec excercise2-postgres-analytics-1 psql -U analytics_user -d analytics_
 3. Run the `booked_slots` query on **Laptop B** — Alice's booking should appear there
 4. Run the count query on both — numbers should match
 
-If Laptop B's count is lower, replication hasn't arrived yet (or `PEER_CONFLICT_URLS` wasn't set).
+If Laptop B's count is lower, replication hasn't arrived yet (or `PEER_CONFLICT_URLS` wasn't set correctly in `.env`).
 
 ---
 
@@ -436,14 +546,15 @@ If Laptop B's count is lower, replication hasn't arrived yet (or `PEER_CONFLICT_
 | Problem | Command to diagnose | Fix |
 |---------|---------------------|-----|
 | Laptop B can't reach Laptop A | `curl http://<A_IP>:8080/health` from B's terminal | Disable macOS Firewall on Laptop A |
-| Port 8080 already allocated | `docker ps \| grep 8080` | `docker stop excercise2-haproxy-1` |
-| No conflict after cross-node booking | Activity Feed → look for `[replication]` lines | Check `PEER_CONFLICT_URLS` was exported before `up -d` |
+| Service stuck at `0/N` replicas | `docker service ps traffic-service_<name> --no-trunc` | Check logs: `docker service logs traffic-service_<name>` |
+| No conflict after cross-node booking | Activity Feed → look for `[replication]` lines | Check `.env` was exported before `docker stack deploy` |
 | Peer shows DEAD immediately | `curl --connect-timeout 5 http://<IP>:8080/health` | Firewall blocking — allow ports 8003 and 8080 |
-| Catch-up sync shows unreachable | Activity Feed or `docker logs <conflict>` \| grep sync | Peer not started yet — register peer manually (see below) |
+| Catch-up sync shows unreachable | `docker service logs traffic-service_conflict-service \| grep sync` | Peer not started yet — register peer manually (see below) |
 | Quick Route dropdown empty | Click away from Journeys tab and back | Conflict-service wasn't ready at login — auto-retries on tab switch |
-| Services not healthy after `up -d` | `docker ps` | Wait 30s more; `docker logs <service>` for errors |
-| Live Data dot grey | Normal during reconnect (~5–30s) | Doesn't affect bookings — WS reconnects automatically to peer if primary is down |
-| Failover not working (still on primary node) | Check Simulate tab — are peers `ALIVE`? | Register health peers first (Part 3), then try again |
+| Live Data dot grey | Normal during reconnect (~5–30s) | Doesn't affect bookings — WS reconnects automatically to peer |
+| Failover not working | Check Simulate tab — are peers `ALIVE`? | Register health peers first (Part 3), then try again |
+| `depends_on must be a list` error | — | Already fixed in `docker-compose.swarm.yml` |
+| Port 5000 conflict on registry | `docker service ls \| grep registry` | Registry already running — the `registry` block was removed from the swarm file |
 
 **Force a catch-up sync manually (without restart):**
 ```bash
@@ -455,9 +566,8 @@ curl -X POST http://localhost:8003/internal/peers/register \
 
 **Check replication logs:**
 ```bash
-docker logs $(docker ps -qf "name=conflict-service" | head -1) 2>&1 | grep -E "replication|sync" | tail -20
+docker service logs traffic-service_conflict-service 2>&1 | grep -E "replication|sync" | tail -20
 ```
-> Look for lines like `[replication] PUSH slot=<id> vehicle=... → peer=http://... (HTTP 204)`
 
 **View raw logs from the API:**
 ```bash
@@ -472,7 +582,8 @@ curl http://localhost:8080/admin/logs -H "Authorization: Bearer <token>" | pytho
 | Port | Service | Used for |
 |------|---------|----------|
 | `3000` | Frontend | Browser UI |
-| `8080` | Nginx gateway | All API calls from the browser |
+| `8080` | HAProxy → Nginx gateway | All API calls from the browser |
 | `8003` | Conflict-service (direct) | Cross-node replication between laptops |
+| `5000` | Local Docker registry | Swarm image distribution (internal) |
 | `5672` | RabbitMQ | Internal only |
 | `15672` | RabbitMQ UI | `http://localhost:15672` — user: `journey_admin` / `journey_pass` |
