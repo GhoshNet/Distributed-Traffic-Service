@@ -29,6 +29,17 @@ func main() {
 	}
 	log.Println("Database tables created/verified")
 
+	// Populate shard routing table from known routes
+	if routes, err := listAllRoutes(context.Background()); err == nil {
+		ids := make([]string, len(routes))
+		for i, r := range routes {
+			ids[i] = r.RouteID
+		}
+		registerKnownRoutes(ids)
+		log.Printf("[shard] registered %d routes for shard assignment (total shards: %d)",
+			len(ids), 1+len(peerConflictURLs))
+	}
+
 	// Startup catch-up sync: pull all active slots from every known peer.
 	// Handles both fresh-start (empty DB) and rejoin-after-downtime (gap filling).
 	for _, peer := range peerConflictURLs {
@@ -66,6 +77,7 @@ func main() {
 	r.Post("/internal/slots/cancel", replicateCancelHandler)  // push a cancellation
 	r.Post("/internal/peers/register", addPeerHandler)        // add peer at runtime
 	r.Get("/admin/logs", logsHandler)                         // cross-node log aggregation
+	r.Get("/internal/shard/info", shardInfoHandler)           // shard assignment for all routes
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.Port,

@@ -41,6 +41,10 @@ services:
     environment:
       REDIS_SENTINEL_ADDRS: ""
       DATABASE_READ_URL: "postgresql+asyncpg://users_user:users_pass@postgres-users:5432/users_db"
+      # Set PEER_USER_URLS in your shell before docker compose up.
+      # Example: export PEER_USER_URLS=http://172.20.10.12:8080
+      # Uses the nginx gateway so only port 8080 needs to be open between nodes.
+      PEER_USER_URLS: "${PEER_USER_URLS:-}"
   journey-service:
     environment:
       REDIS_SENTINEL_ADDRS: ""

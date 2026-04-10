@@ -31,6 +31,9 @@ func checkConflictsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Log shard role before checking — visible in Distributed Activity Feed
+	logShardRole(req.RouteID, req.JourneyID)
+
 	resp, err := checkConflicts(r.Context(), req)
 	if err != nil {
 		log.Printf("Conflict check failed: %v", err)
@@ -148,6 +151,12 @@ func listRoutesHandler(w http.ResponseWriter, r *http.Request) {
 		"routes": routes,
 		"count":  len(routes),
 	})
+}
+
+// shardInfoHandler returns this node's shard assignment for all known routes.
+// GET /internal/shard/info
+func shardInfoHandler(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, getShardInfo())
 }
 
 // logsHandler returns recent log entries from the ring buffer.

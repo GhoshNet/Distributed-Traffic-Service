@@ -10,8 +10,10 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from .database import init_db
+from .database import init_db, async_session
 from .routes import router
+from .internal_routes import internal_router
+from .replication import load_peers, get_peers, sync_from_peer, start_periodic_sync
 from shared.config import setup_logging
 from shared.schemas import HealthResponse
 from shared.messaging import get_broker, close_broker
@@ -39,6 +41,19 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Could not connect to RabbitMQ: {e}")
 
+    # Load peer URLs from env and perform startup catch-up sync
+    peers = load_peers()
+    if peers:
+        for peer in peers:
+            async def _sync(p=peer):
+                import asyncio
+                await asyncio.sleep(5)  # wait for own DB to be fully ready
+                await sync_from_peer(p, async_session)
+            asyncio.create_task(_sync())
+        # Periodic re-sync every 5 minutes (fills gaps from missed pushes)
+        start_periodic_sync(300, async_session)
+        logger.info(f"User replication started — peers: {peers}")
+
     yield
 
     logger.info("User Service shutting down...")
@@ -62,6 +77,7 @@ app.add_middleware(
 )
 
 app.include_router(router)
+app.include_router(internal_router)
 
 
 @app.middleware("http")
@@ -74,6 +90,17 @@ async def node_failure_middleware(request: Request, call_next):
             content={"detail": "Node is in simulated failure state"},
         )
     return await call_next(request)
+
+
+@app.get("/admin/logs")
+async def get_logs(limit: int = 200):
+    """Cross-node log aggregation — returns recent log entries from this node's ring buffer."""
+    from shared.config import get_recent_logs
+    return {
+        "node": os.environ.get("HOSTNAME", "user-service"),
+        "service": "user-service",
+        "entries": get_recent_logs(limit),
+    }
 
 
 @app.get("/health", response_model=HealthResponse)
