@@ -222,24 +222,36 @@ function handleLiveEvent(data) {
 }
 
 // loadPeerAPIs — reads registered health peers and extracts their API base URLs.
-// Called on login and after registering a new peer.
-// Uses authFetch so peer list can be refreshed even when the primary node is down.
+// Tries primary node first; if it is down, tries each already-known peer so the
+// list stays fresh even when the primary node is fully offline.
 async function loadPeerAPIs() {
-    try {
-        const r = await authFetch('/health/nodes');
-        if (!r.ok) return;
-        const data = await r.json();
-        activePeerAPIs = Object.values(data.peers || {})
-            .filter(p => p.status === 'ALIVE' && p.health_url)
-            .map(p => p.health_url.replace(/\/health.*$/, ''));  // "http://x.x.x.x:8080/health" → "http://x.x.x.x:8080"
-        // Persist so failover works at next login even before auth
-        localStorage.setItem('jb_peers', JSON.stringify(activePeerAPIs));
-        if (activePeerAPIs.length > 0) {
-            console.info('[failover] peer nodes available:', activePeerAPIs);
+    // Build the list of bases to try: primary first, then cached peers
+    const cached = JSON.parse(localStorage.getItem('jb_peers') || '[]');
+    const bases = [API, ...cached.filter(p => p !== API)];
+
+    for (const base of bases) {
+        try {
+            const r = await fetch(base + '/health/nodes', {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (!r.ok) continue;
+            const data = await r.json();
+            const fresh = Object.values(data.peers || {})
+                .filter(p => p.status === 'ALIVE' && p.health_url)
+                .map(p => p.health_url.replace(/\/health.*$/, ''));
+            // Merge: keep peers from all sources, deduplicate, exclude self
+            const merged = [...new Set([...fresh, ...cached])].filter(p => p !== API);
+            activePeerAPIs = merged;
+            localStorage.setItem('jb_peers', JSON.stringify(activePeerAPIs));
+            if (activePeerAPIs.length > 0)
+                console.info('[failover] peer nodes:', activePeerAPIs, '(via', base, ')');
+            return;
+        } catch(e) {
+            console.warn(`[failover] could not load peer list from ${base}:`, e.message);
         }
-    } catch(e) {
-        console.warn('[failover] could not load peer list:', e);
     }
+    // All nodes unreachable — keep whatever is cached in localStorage
+    console.warn('[failover] all nodes unreachable for peer list — using cached peers:', cached);
 }
 
 // setActiveNode — updates the topbar indicator when failover switches nodes.

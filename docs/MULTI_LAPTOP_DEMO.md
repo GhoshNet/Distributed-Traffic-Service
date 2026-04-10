@@ -57,15 +57,17 @@ EOF
 
 ---
 
-### Step 3 — Restart conflict-service and user-service with the new peer URLs
+### Step 3 — Restart services with the new peer URLs
 ```bash
 docker compose \
   -f /Users/tanmay/Documents/TCD_Course_Material/DS/Excercise2/docker-compose.yml \
   -f /Users/tanmay/Documents/TCD_Course_Material/DS/Excercise2/docker-compose.slim.yml \
-  up -d --no-build --force-recreate conflict-service user-service
+  up -d --no-build --force-recreate conflict-service user-service journey-service
 ```
 > `--force-recreate` is required so Docker actually injects the new `.env` values
 > (without it, compose sees no config diff and leaves the container unchanged).
+> `journey-service` now also uses `PEER_CONFLICT_URLS` so it can fall back to the
+> peer's conflict-service if the local one is down.
 
 ---
 

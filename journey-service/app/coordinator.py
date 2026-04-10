@@ -41,14 +41,12 @@ with the same return signature (JourneyStatus, Optional[str]).
 
 import json
 import logging
-import os
 import uuid
 from datetime import datetime
 from typing import Optional
 
-import httpx
-
 from .database import Journey, OutboxEvent
+from .conflict_client import resilient_conflict_check, resilient_conflict_cancel
 from shared.schemas import (
     ConflictCheckRequest,
     ConflictCheckResponse,
@@ -57,12 +55,8 @@ from shared.schemas import (
     VehicleType,
 )
 from shared.tracing import get_correlation_id
-from shared.circuit_breaker import get_circuit_breaker, CircuitBreakerOpenError
 
 logger = logging.getLogger(__name__)
-
-CONFLICT_SERVICE_URL = os.getenv("CONFLICT_SERVICE_URL", "http://conflict-service:8000")
-TPC_TIMEOUT_SECONDS = 30  # mirrors Archive's config.TWO_PC_TIMEOUT
 
 
 class TwoPhaseCoordinator:
@@ -93,10 +87,10 @@ class TwoPhaseCoordinator:
         )
 
         # ── Phase 1: TRY (PREPARE) ──────────────────────────────────────────
-        conflict_result = await TwoPhaseCoordinator._try_phase(journey, txn_id)
+        conflict_result, prepare_url = await TwoPhaseCoordinator._try_phase(journey, txn_id)
 
         if conflict_result is None:
-            logger.error(f"[2PC] TXN={txn_id} PREPARE failed — conflict service unreachable")
+            logger.error(f"[2PC] TXN={txn_id} PREPARE failed — all conflict nodes unreachable")
             return JourneyStatus.REJECTED, "Conflict check service unavailable. Please retry."
 
         if conflict_result.is_conflict:
@@ -105,7 +99,7 @@ class TwoPhaseCoordinator:
             logger.warning(f"[2PC] TXN={txn_id} ABORT — conflict: {reason}")
             return JourneyStatus.REJECTED, reason
 
-        logger.info(f"[2PC] TXN={txn_id} PREPARE OK — proceeding to CONFIRM")
+        logger.info(f"[2PC] TXN={txn_id} PREPARE OK on {prepare_url} — proceeding to CONFIRM")
 
         # ── Phase 2a: CONFIRM (COMMIT) ──────────────────────────────────────
         # Capacity IS reserved. We must commit the journey or compensate.
@@ -152,7 +146,8 @@ class TwoPhaseCoordinator:
                 f"[2PC] TXN={txn_id} COMMIT failed ({exc}) — "
                 f"running compensating CANCEL for journey {journey.id}"
             )
-            await TwoPhaseCoordinator._cancel_phase(journey.id, txn_id)
+            # Cancel on the same node that did PREPARE first, then try others
+            await TwoPhaseCoordinator._cancel_phase(journey.id, txn_id, prepare_url)
             return JourneyStatus.REJECTED, "Booking failed during commit. Capacity released."
 
     # ── Phase helpers ───────────────────────────────────────────────────────
@@ -160,10 +155,10 @@ class TwoPhaseCoordinator:
     @staticmethod
     async def _try_phase(
         journey: Journey, txn_id: str
-    ) -> Optional[ConflictCheckResponse]:
+    ) -> tuple[Optional[ConflictCheckResponse], Optional[str]]:
         """
-        PREPARE: call conflict-service to check AND reserve capacity.
-        Returns None on communication failure, ConflictCheckResponse otherwise.
+        PREPARE: call conflict-service (with peer failover) to check AND reserve capacity.
+        Returns (ConflictCheckResponse, used_url) on success, (None, None) on total failure.
         """
         request = ConflictCheckRequest(
             journey_id=journey.id,
@@ -178,59 +173,27 @@ class TwoPhaseCoordinator:
             vehicle_type=VehicleType(journey.vehicle_type),
             route_id=getattr(journey, "route_id", None),
         )
-
-        cb = get_circuit_breaker("conflict-service-2pc", failure_threshold=3, reset_timeout=30.0)
-
-        async def _call():
-            async with httpx.AsyncClient(timeout=TPC_TIMEOUT_SECONDS) as client:
-                resp = await client.post(
-                    f"{CONFLICT_SERVICE_URL}/api/conflicts/check",
-                    json=request.model_dump(mode="json"),
-                    headers={
-                        "X-Correlation-ID": get_correlation_id(),
-                        "X-2PC-Transaction-ID": txn_id,
-                    },
-                )
-                resp.raise_for_status()
-                return ConflictCheckResponse(**resp.json())
-
-        try:
-            return await cb.call(_call)
-        except CircuitBreakerOpenError:
-            logger.warning(f"[2PC] TXN={txn_id} circuit breaker OPEN for conflict-service")
-            return None
-        except (httpx.TimeoutException, httpx.ConnectError) as exc:
-            logger.error(f"[2PC] TXN={txn_id} PREPARE network error: {exc}")
-            return None
-        except Exception as exc:
-            logger.error(f"[2PC] TXN={txn_id} PREPARE error: {exc}")
-            return None
+        result, used_url = await resilient_conflict_check(
+            request, extra_headers={"X-2PC-Transaction-ID": txn_id}
+        )
+        if result is None:
+            logger.error(f"[2PC] TXN={txn_id} PREPARE failed — all conflict nodes unreachable")
+        return result, used_url
 
     @staticmethod
-    async def _cancel_phase(journey_id: str, txn_id: str):
+    async def _cancel_phase(journey_id: str, txn_id: str, preferred_url: Optional[str] = None):
         """
         CANCEL (compensating transaction): release capacity held in conflict-service.
-        Mirrors Archive's coordinator abort → booking_service.abort_held_booking().
+        Tries the node that handled PREPARE first, then falls back to all others.
         Best-effort — logs on failure but does not raise.
         """
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.post(
-                    f"{CONFLICT_SERVICE_URL}/api/conflicts/cancel/{journey_id}",
-                    headers={"X-2PC-Transaction-ID": txn_id},
-                )
-                if resp.status_code in (204, 404):
-                    logger.info(
-                        f"[2PC] TXN={txn_id} CANCEL sent for journey {journey_id} "
-                        f"(status={resp.status_code})"
-                    )
-                else:
-                    logger.warning(
-                        f"[2PC] TXN={txn_id} CANCEL returned unexpected "
-                        f"status={resp.status_code} for journey {journey_id}"
-                    )
-        except Exception as exc:
+        ok = await resilient_conflict_cancel(
+            journey_id,
+            preferred_url=preferred_url,
+            extra_headers={"X-2PC-Transaction-ID": txn_id},
+        )
+        if not ok:
             logger.error(
-                f"[2PC] TXN={txn_id} CANCEL failed for journey {journey_id}: {exc} "
+                f"[2PC] TXN={txn_id} CANCEL failed on all nodes for journey={journey_id} "
                 f"— capacity may leak, manual cleanup required"
             )

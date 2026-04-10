@@ -509,6 +509,7 @@ services:
       REDIS_MASTER_NAME: mymaster
       RABBITMQ_URL: amqp://journey_admin:journey_pass@rabbitmq:5672/journey_vhost
       CONFLICT_SERVICE_URL: http://conflict-service:8000
+      PEER_CONFLICT_URLS: ""
       JWT_SECRET: keefkfwjNBEFINoodwoedibIOEJFKWNFIjjjdIIIOOP
       SERVICE_NAME: journey-service
     depends_on:

@@ -49,6 +49,7 @@ services:
     environment:
       REDIS_SENTINEL_ADDRS: ""
       DATABASE_READ_URL: "postgresql+asyncpg://journeys_user:journeys_pass@postgres-journeys:5432/journeys_db"
+      PEER_CONFLICT_URLS: "${PEER_CONFLICT_URLS:-}"
   conflict-service:
     environment:
       REDIS_SENTINEL_ADDRS: ""

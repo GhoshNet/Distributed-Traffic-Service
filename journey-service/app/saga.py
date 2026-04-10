@@ -10,17 +10,16 @@ Implements the saga pattern for the booking flow:
 Includes timeout handling for when the Conflict Detection Service is unavailable.
 """
 
-import os
 import asyncio
 import logging
 from datetime import datetime
 from typing import Optional
 
-import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 
 from .database import Journey, async_session
+from .conflict_client import resilient_conflict_check
 from shared.schemas import (
     ConflictCheckRequest,
     ConflictCheckResponse,
@@ -29,12 +28,8 @@ from shared.schemas import (
 )
 from shared.messaging import get_broker
 from shared.tracing import get_correlation_id
-from shared.circuit_breaker import get_circuit_breaker, CircuitBreakerOpenError
 
 logger = logging.getLogger(__name__)
-
-CONFLICT_SERVICE_URL = os.getenv("CONFLICT_SERVICE_URL", "http://conflict-service:8000")
-SAGA_TIMEOUT_SECONDS = 30
 
 
 class BookingSaga:
@@ -83,7 +78,7 @@ class BookingSaga:
 
     @staticmethod
     async def _check_conflicts(journey: Journey) -> Optional[ConflictCheckResponse]:
-        """Call the Conflict Detection Service."""
+        """Call the Conflict Detection Service — with peer failover."""
         request = ConflictCheckRequest(
             journey_id=journey.id,
             user_id=journey.user_id,
@@ -97,30 +92,10 @@ class BookingSaga:
             vehicle_type=journey.vehicle_type,
             route_id=getattr(journey, "route_id", None),
         )
-
-        cb = get_circuit_breaker("conflict-service", failure_threshold=3, reset_timeout=30.0)
-
-        async def _make_request():
-            async with httpx.AsyncClient(timeout=SAGA_TIMEOUT_SECONDS) as client:
-                response = await client.post(
-                    f"{CONFLICT_SERVICE_URL}/api/conflicts/check",
-                    json=request.model_dump(mode="json"),
-                    headers={"X-Correlation-ID": get_correlation_id()}
-                )
-                response.raise_for_status()
-                return ConflictCheckResponse(**response.json())
-
-        try:
-            return await cb.call(_make_request)
-        except httpx.TimeoutException:
-            logger.error("Conflict Detection Service timed out")
-            return None
-        except httpx.ConnectError:
-            logger.error("Cannot connect to Conflict Detection Service")
-            return None
-        except Exception as e:
-            logger.error(f"Error calling Conflict Detection Service: {e}")
-            return None
+        result, used_url = await resilient_conflict_check(request)
+        if result is None:
+            logger.error("All conflict-service nodes unreachable")
+        return result
 
     @staticmethod
     def build_event_payload(journey: Journey, event_type: EventType) -> dict:
