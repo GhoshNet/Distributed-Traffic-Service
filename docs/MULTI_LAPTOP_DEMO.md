@@ -45,23 +45,27 @@ docker stop excercise2-haproxy-1 2>/dev/null; true
 
 ---
 
-### Step 2 — Set the peer's conflict-service URL
+### Step 2 — Write the peer URLs into the .env file
 ```bash
-export PEER_CONFLICT_URLS=http://<LAPTOP_B_IP>:8003
+cat > /Users/tanmay/Documents/TCD_Course_Material/DS/Excercise2/.env <<EOF
+PEER_CONFLICT_URLS=http://<LAPTOP_B_IP>:8003
+PEER_USER_URLS=http://<LAPTOP_B_IP>:8080
+EOF
 ```
-> Tells your conflict-service where to push replicated bookings.  
-> Replace `<LAPTOP_B_IP>` with Laptop B's actual IP.
+> Replace `<LAPTOP_B_IP>` with Laptop B's actual IP.  
+> Docker Compose loads `.env` automatically on every `docker compose` command — so you only set this once.
 
 ---
 
-### Step 3 — Restart conflict-service with the new peer URL
+### Step 3 — Restart conflict-service and user-service with the new peer URLs
 ```bash
 docker compose \
   -f /Users/tanmay/Documents/TCD_Course_Material/DS/Excercise2/docker-compose.yml \
   -f /Users/tanmay/Documents/TCD_Course_Material/DS/Excercise2/docker-compose.slim.yml \
-  up -d --no-build conflict-service
+  up -d --no-build --force-recreate conflict-service user-service
 ```
-> Recreates the conflict-service container with the `PEER_CONFLICT_URLS` env var injected.
+> `--force-recreate` is required so Docker actually injects the new `.env` values
+> (without it, compose sees no config diff and leaves the container unchanged).
 
 ---
 
@@ -100,9 +104,13 @@ docker ps --format "table {{.Names}}\t{{.Status}}" | grep -E "frontend|notificat
 ```bash
 curl http://localhost:8080/health
 curl http://localhost:8003/health
-docker logs excercise2-conflict-service-1 2>&1 | grep -E "peer|sync"
+docker logs excercise2-conflict-service-1 2>&1 | grep -E "peer|sync|replication"
+docker logs excercise2-user-service-1 2>&1 | grep -E "peer|sync|replication"
 ```
-> Last command should show: `Cross-node replication enabled — peers: [http://<LAPTOP_B_IP>:8003]`
+> Should show:
+> - `Cross-node replication enabled — peers: [http://<LAPTOP_B_IP>:8003]`
+> - `[user-replication] peers configured: ['http://<LAPTOP_B_IP>:8080']`
+> - `[sync] CATCH-UP from peer=... complete: applied=N total=N`
 
 ---
 
@@ -132,9 +140,12 @@ cd Excercise2
 git checkout approach3
 ```
 
-### Step 4 — Set the peer URL pointing back to Laptop A
+### Step 4 — Write the peer URLs into the .env file
 ```bash
-export PEER_CONFLICT_URLS=http://<LAPTOP_A_IP>:8003
+cat > .env <<EOF
+PEER_CONFLICT_URLS=http://<LAPTOP_A_IP>:8003
+PEER_USER_URLS=http://<LAPTOP_A_IP>:8080
+EOF
 ```
 > Replace `<LAPTOP_A_IP>` with Laptop A's actual IP.
 
@@ -376,8 +387,8 @@ docker exec excercise2-postgres-conflicts-1 psql -U conflicts_user -d conflicts_
 
 # Road segment capacity (how full each grid cell is per time slot)
 docker exec excercise2-postgres-conflicts-1 psql -U conflicts_user -d conflicts_db \
-  -c "SELECT round(lat::numeric,3), round(lng::numeric,3), time_slot, booking_count
-      FROM road_segment_capacity ORDER BY time_slot DESC LIMIT 20;"
+  -c "SELECT round(grid_lat::numeric,3), round(grid_lng::numeric,3), time_slot_start, current_bookings, max_capacity
+      FROM road_segment_capacity ORDER BY time_slot_start DESC LIMIT 20;"
 ```
 
 ### journeys_db — bookings made on THIS node
@@ -404,7 +415,7 @@ docker exec excercise2-postgres-users-1 psql -U users_user -d users_db \
 
 ```bash
 docker exec excercise2-postgres-analytics-1 psql -U analytics_user -d analytics_db \
-  -c "SELECT event_type, COUNT(*) FROM analytics_events GROUP BY event_type ORDER BY count DESC;"
+  -c "SELECT event_type, COUNT(*) FROM event_logs GROUP BY event_type ORDER BY count DESC;"
 ```
 
 ### How to confirm replication is working
