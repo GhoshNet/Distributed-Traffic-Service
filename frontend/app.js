@@ -29,9 +29,23 @@ let roadNetworkVisible = true;
 // Route colour palette (one per predefined route)
 const ROUTE_COLORS = ['#00b4d8', '#f77f00', '#06d6a0', '#e63946', '#8338ec', '#ffbe0b'];
 
-// Routing logic
-if (token && user) enterApp();
-else document.getElementById('auth-screen').style.display = 'flex';
+// Routing logic — validate token on refresh before entering app
+if (token && user) {
+  authFetch('/api/users/me').then(r => {
+    if (r.ok) {
+      r.json().then(u => { user = u; localStorage.setItem('jb_user', JSON.stringify(u)); });
+      enterApp();
+    } else {
+      localStorage.clear();
+      document.getElementById('auth-screen').style.display = 'flex';
+    }
+  }).catch(() => {
+    // Network down — trust cached token and try anyway
+    enterApp();
+  });
+} else {
+  document.getElementById('auth-screen').style.display = 'flex';
+}
 
 function switchAuth(tab) {
   document.getElementById('login-form').style.display = tab === 'login' ? 'block' : 'none';
@@ -93,7 +107,7 @@ function logout() {
   localStorage.clear(); location.reload();
 }
 
-function enterApp() {
+async function enterApp() {
   document.getElementById('auth-screen').style.display = 'none';
   document.getElementById('app').style.display = 'block';
   document.getElementById('user-name').innerText = user.full_name;
@@ -101,9 +115,7 @@ function enterApp() {
   go('map');
   connectWS();
   setupAutocomplete();
-  loadVehicles();
-  loadPredefinedRoutes();   // fetch road network from conflict-service
-  loadPeerAPIs();           // discover peer nodes for automatic failover
+  await Promise.all([loadVehicles(), loadPredefinedRoutes(), loadPeerAPIs()]);
   // Set default departure time
   let d = new Date(); d.setHours(d.getHours()+1);
   document.getElementById('j-depart').value = d.toISOString().slice(0,16);
@@ -152,9 +164,14 @@ function connectWS(baseOverride) {
     console.info('[ws] connected to', url);
   };
 
-  wsConn.onclose = () => {
+  wsConn.onclose = (e) => {
     dot.className = 'ws-dot';
     _wsFailCount++;
+    // Code 4001 = auth rejected — token is bad, force re-login
+    if (e.code === 4001 || e.code === 4003) {
+      console.warn('[ws] auth rejected by server — clearing session');
+      localStorage.clear(); location.reload(); return;
+    }
     // After 2 consecutive failures on the current base, try the next ALIVE peer WS.
     // This ensures live notifications survive a primary node crash.
     const allBases = [API, ...activePeerAPIs.filter(p => p !== API)];
@@ -475,6 +492,7 @@ async function loadJourneys() {
 async function loadVehicles() {
     try {
         const r = await authFetch('/api/users/vehicles');
+        if (r.status === 401) { localStorage.clear(); location.reload(); return; }
         if (!r.ok) return;
         const data = await r.json();
         const vehicles = data.vehicles || [];
