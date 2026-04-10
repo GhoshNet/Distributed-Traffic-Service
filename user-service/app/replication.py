@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 _peers: List[str] = []
 _node_addr: str = os.environ.get("HOSTNAME", "user-service")
+_my_url: str = os.environ.get("MY_USER_URL", "").rstrip("/")
 
 
 def load_peers() -> List[str]:
@@ -44,11 +45,58 @@ def get_peers() -> List[str]:
     return list(_peers)
 
 
-def add_peer(peer_url: str):
+def add_peer(peer_url: str) -> bool:
+    """Add a peer. Returns True if newly added, False if already known."""
     url = peer_url.rstrip("/")
+    if url == _my_url:
+        return False  # never add self
     if url not in _peers:
         _peers.append(url)
         logger.info(f"[user-replication] peer added at runtime: {url}")
+        return True
+    return False
+
+
+async def announce_self_to(peer_url: str):
+    """Tell a peer about our own URL so they add us without manual config."""
+    if not _my_url:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(
+                f"{peer_url}/internal/users/peers/register",
+                json={"peer_url": _my_url},
+            )
+        logger.info(f"[user-replication] announced self ({_my_url}) to {peer_url}")
+    except Exception as exc:
+        logger.warning(f"[user-replication] could not announce self to {peer_url}: {exc}")
+
+
+async def gossip_new_peer(new_peer_url: str):
+    """Tell all existing peers about a newly joined peer, and vice versa."""
+    existing = [p for p in get_peers() if p != new_peer_url]
+    async with httpx.AsyncClient(timeout=3.0) as client:
+        # Tell existing peers about the new one
+        for peer in existing:
+            try:
+                await client.post(
+                    f"{peer}/internal/users/peers/register",
+                    json={"peer_url": new_peer_url},
+                )
+                logger.info(f"[gossip] told {peer} about new peer {new_peer_url}")
+            except Exception as exc:
+                logger.warning(f"[gossip] could not reach {peer}: {exc}")
+        # Tell the new peer about all existing ones
+        if _my_url:
+            for peer in existing:
+                try:
+                    await client.post(
+                        f"{new_peer_url}/internal/users/peers/register",
+                        json={"peer_url": peer},
+                    )
+                    logger.info(f"[gossip] told {new_peer_url} about existing peer {peer}")
+                except Exception as exc:
+                    logger.warning(f"[gossip] could not reach {new_peer_url}: {exc}")
 
 
 # ── Consistent-hash sharding ───────────────────────────────────────────────────

@@ -95,7 +95,10 @@ func addPeerHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "peer_url required"})
 		return
 	}
-	addPeer(body.PeerURL)
+	isNew := addPeer(body.PeerURL)
+	if isNew {
+		go gossipNewPeer(body.PeerURL)
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"registered": body.PeerURL,
 		"peers":      getPeers(),

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -54,19 +55,103 @@ func getPeers() []string {
 // addPeer registers a peer URL at runtime (idempotent) and immediately
 // triggers a catch-up sync from it.  Used by POST /internal/peers/register
 // so a late-joining node can plug in without a restart.
-func addPeer(peerURL string) {
+// Returns true if newly added, false if already known.
+func addPeer(peerURL string) bool {
+	myURL := os.Getenv("MY_CONFLICT_URL")
+	if peerURL == myURL {
+		return false // never add self
+	}
 	peersMu.Lock()
 	for _, u := range peerConflictURLs {
 		if u == peerURL {
 			peersMu.Unlock()
 			log.Printf("[replication] peer %s already registered", peerURL)
-			return
+			return false
 		}
 	}
 	peerConflictURLs = append(peerConflictURLs, peerURL)
 	peersMu.Unlock()
 	log.Printf("[replication] new peer %s added — triggering catch-up sync", peerURL)
 	go syncFromPeer(peerURL)
+	return true
+}
+
+// announceSelf tells peerURL about our own URL so peering is bidirectional
+// without manual config on both sides.
+func announceSelf(peerURL string) {
+	myURL := os.Getenv("MY_CONFLICT_URL")
+	if myURL == "" {
+		return
+	}
+	body, _ := json.Marshal(map[string]string{"peer_url": myURL})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		peerURL+"/internal/peers/register", bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := replicationClient.Do(req)
+	if err != nil {
+		log.Printf("[replication] could not announce self to %s: %v", peerURL, err)
+		return
+	}
+	resp.Body.Close()
+	log.Printf("[replication] announced self (%s) to %s", myURL, peerURL)
+}
+
+// gossipNewPeer tells all existing peers about a newly joined peer, and tells
+// the new peer about all existing peers, so the full mesh forms automatically.
+func gossipNewPeer(newPeerURL string) {
+	existing := getPeers()
+	body, _ := json.Marshal(map[string]string{"peer_url": newPeerURL})
+	myURL := os.Getenv("MY_CONFLICT_URL")
+	for _, peer := range existing {
+		if peer == newPeerURL {
+			continue
+		}
+		// Tell existing peer about the new one
+		go func(p string) {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+				p+"/internal/peers/register", bytes.NewReader(body))
+			if err != nil {
+				return
+			}
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := replicationClient.Do(req)
+			if err != nil {
+				log.Printf("[gossip] could not reach %s: %v", p, err)
+				return
+			}
+			resp.Body.Close()
+			log.Printf("[gossip] told %s about new peer %s", p, newPeerURL)
+		}(peer)
+
+		// Tell the new peer about this existing peer
+		if myURL != "" {
+			existingBody, _ := json.Marshal(map[string]string{"peer_url": peer})
+			go func(p string) {
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+					newPeerURL+"/internal/peers/register", bytes.NewReader(existingBody))
+				if err != nil {
+					return
+				}
+				req.Header.Set("Content-Type", "application/json")
+				resp, err := replicationClient.Do(req)
+				if err != nil {
+					log.Printf("[gossip] could not reach new peer %s: %v", newPeerURL, err)
+					return
+				}
+				resp.Body.Close()
+				log.Printf("[gossip] told new peer %s about existing peer %s", newPeerURL, p)
+			}(peer)
+		}
+	}
 }
 
 // ── Forward replication (push, async) ──────────────────────────────────────

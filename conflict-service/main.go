@@ -40,13 +40,14 @@ func main() {
 			len(ids), 1+len(peerConflictURLs))
 	}
 
-	// Startup catch-up sync: pull all active slots from every known peer.
-	// Handles both fresh-start (empty DB) and rejoin-after-downtime (gap filling).
+	// Startup catch-up sync + self-announcement: pull all active slots from
+	// every known peer and tell them about us so peering is bidirectional.
 	for _, peer := range peerConflictURLs {
 		peer := peer
 		go func() {
 			time.Sleep(3 * time.Second) // wait for own DB to be fully ready
 			syncFromPeer(peer)
+			announceSelf(peer) // tell peer our URL — no more manual PEER_CONFLICT_URLS on both sides
 		}()
 	}
 

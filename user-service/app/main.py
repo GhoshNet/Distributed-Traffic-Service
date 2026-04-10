@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 from .database import init_db, async_session
 from .routes import router
 from .internal_routes import internal_router
-from .replication import load_peers, get_peers, sync_from_peer, start_periodic_sync
+from .replication import load_peers, get_peers, sync_from_peer, start_periodic_sync, announce_self_to
 from shared.config import setup_logging
 from shared.schemas import HealthResponse
 from shared.messaging import get_broker, close_broker
@@ -47,10 +47,11 @@ async def lifespan(app: FastAPI):
     peers = load_peers()
     if peers:
         for peer in peers:
-            async def _sync(p=peer):
+            async def _start(p=peer):
                 await asyncio.sleep(5)  # wait for own DB to be fully ready
                 await sync_from_peer(p, async_session)
-            asyncio.create_task(_sync())
+                await announce_self_to(p)  # tell peer about us so it's bidirectional
+            asyncio.create_task(_start())
         # Periodic re-sync every 5 minutes (fills gaps from missed pushes)
         start_periodic_sync(300, async_session)
         logger.info(f"User replication started — peers: {peers}")

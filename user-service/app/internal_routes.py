@@ -207,10 +207,13 @@ async def get_all_users_and_vehicles(db: AsyncSession = Depends(get_db)):
 @internal_router.post("/peers/register")
 async def register_peer(payload: dict):
     """Register a peer user-service URL at runtime and trigger immediate catch-up sync."""
+    from .replication import gossip_new_peer
     peer_url = (payload.get("peer_url") or "").rstrip("/")
     if not peer_url:
         raise HTTPException(status_code=400, detail="peer_url required")
-    add_peer(peer_url)
+    is_new = add_peer(peer_url)
     from .database import async_session
     asyncio.create_task(sync_from_peer(peer_url, async_session))
+    if is_new:
+        asyncio.create_task(gossip_new_peer(peer_url))
     return {"registered": peer_url, "peers": get_peers(), "note": "Catch-up sync started in background"}
