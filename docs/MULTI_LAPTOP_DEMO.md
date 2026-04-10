@@ -63,6 +63,24 @@ docker compose \
 ```
 > Nginx caches service IPs at startup — force-recreate so it picks up the new conflict-service IP.
 
+### ⚠️ IMPORTANT — If port 8080 fails after gateway recreate
+
+Recreating `api-gateway-1` can silently stop `frontend` and `notification-service` (they're not in its `depends_on` chain but get caught in Docker's reconcile). Nginx will crash-loop if `notification-service` is missing. **Always run this after any gateway recreate:**
+
+```bash
+docker compose \
+  -f /Users/tanmay/Documents/TCD_Course_Material/DS/Excercise2/docker-compose.yml \
+  -f /Users/tanmay/Documents/TCD_Course_Material/DS/Excercise2/docker-compose.slim.yml \
+  up -d --no-build
+```
+> Starts any stopped containers without touching running ones. Safe to run anytime.
+
+To confirm everything is back:
+```bash
+docker ps --format "table {{.Names}}\t{{.Status}}" | grep -E "frontend|notification|gateway"
+```
+> All three should show `Up` — if any shows `Exited` the command above will fix it.
+
 ---
 
 ### Step 5 — Confirm everything is healthy
@@ -333,6 +351,34 @@ On **either laptop's** Simulate tab:
 On **either laptop's** Simulate tab:
 - Click **🔄 Two-Phase Commit Demo**
 - Watch the log: should show `✅ 2PC COMMITTED — capacity reserved + journey confirmed atomically`
+
+---
+
+### PART 6 — Seamless Node Failover Demo
+
+> This shows that if Laptop A's backend goes down, a user's browser automatically switches to Laptop B **without losing their session or getting an error**.
+
+**How it works:**  
+The frontend registers health peers via the Simulate tab. On every API call, if the primary node returns a 5xx error or is unreachable, `authFetch` automatically retries the same request against each ALIVE peer. The topbar indicator switches from `🟢 Primary` to `⚡ Failover: <peer-ip>:8080`.
+
+**Prerequisites:** Both laptops must have each other registered as health peers (Part 3 above).
+
+**Run the demo:**
+
+1. On **Laptop A's** Simulate tab — click **💀 Kill Node**
+   - This makes Laptop A's `/health` return `503` and its journey endpoints return `503`
+
+2. On **Laptop A's browser** — go to **Journeys tab** and try to **book a new journey**
+   - Expected: the request fails on Laptop A's backend (503) → `authFetch` retries on Laptop B → booking succeeds
+   - The topbar shows: `⚡ Failover: 192.168.x.x:8080`
+   - A warning toast appears: `Node failover — now routing to 192.168.x.x:8080`
+   - The booking is **confirmed** — user experience uninterrupted
+
+3. On **Laptop A's** Simulate tab — click **💚 Recover Node**
+   - Next API call will succeed on Laptop A again
+   - Topbar returns to: `🟢 Primary`
+
+> **What this demonstrates:** Client-side failover using the peer discovery list. JWT tokens are valid on both nodes (same secret), so the session carries over. The conflict-service replication ensures the booking made during failover is visible on both nodes when the primary recovers.
 
 ---
 

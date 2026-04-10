@@ -298,6 +298,140 @@ restarting the container, and immediately triggers a catch-up sync from the new 
 
 ---
 
+## Feature: Full-Node Failure Simulation (Cascade)
+
+**Goal**  
+When a node is "killed" via the Simulate tab, the *entire node* should appear dead to peers and clients —  
+not just the journey-service health endpoint. Login, register, and all booking operations must also fail  
+so that clients are forced to failover to a peer node.
+
+**What was changed**
+
+`journey-service/app/main.py`  
+- `POST /admin/simulate/fail` — sets `_node_failed = True` (makes `/health` return 503) **and** cascades  
+  an HTTP call to `POST http://user-service:8000/admin/simulate/fail` via `httpx.AsyncClient`.
+- `POST /admin/simulate/recover` — clears `_node_failed` and cascades recovery to user-service.
+
+`user-service/app/main.py`  
+- Added `node_failure_middleware` HTTP middleware — returns 503 for **all** paths except  
+  `/health`, `/admin/simulate/fail`, and `/admin/simulate/recover` when `_node_failed` is True.
+- Modified `/health` endpoint to return 503 when `_node_failed` is True.
+- Added `POST /admin/simulate/fail` and `POST /admin/simulate/recover` endpoints.
+
+**Effect after kill:**
+- `/health` on both journey-service and user-service → 503 (peers detect SUSPECT → DEAD)
+- Login (`POST /api/users/login`) → 503
+- Register (`POST /api/users/register`) → 503
+- All journey operations → 503 (journey-service `/health` 503 blocks gateway routing)
+- Browser's `resilientFetch` catches the 503s and retries against peer nodes
+
+**Recovery** — clicking Recover restores both services atomically via the same cascade.
+
+**Note on admin endpoints**: `simKillNode()` and `simRecoverNode()` call `authFetch('/admin/simulate/...')`.  
+These go to `journey-service`, which still returns 200 for admin calls (not blocked by `_node_failed`).  
+So Kill/Recover buttons always operate on the local node regardless of failover state.
+
+---
+
+## Feature: Client-Side Seamless Failover (`resilientFetch`)
+
+**Goal**  
+If a user's primary backend node goes down mid-session (or at login), all API calls transparently  
+retry against ALIVE peer nodes — no error shown to the user, no session lost.
+
+**Architecture**
+
+Two fetch wrappers replace direct `fetch(API+...)` calls throughout the frontend:
+
+```javascript
+// resilientFetch — no auth header, used for login/register/pre-auth calls
+async function resilientFetch(url, opts={}) {
+    const allBases = [API, ...activePeerAPIs.filter(p => p !== API)];
+    for (let i = 0; i < allBases.length; i++) {
+        const base = allBases[i];
+        try {
+            const resp = await fetch(base + url, { ...opts });
+            // 4xx = app error (conflict, not-found, validation) — return immediately, do NOT failover
+            // 5xx / network error = node failure — try next peer
+            if (resp.ok || (resp.status >= 400 && resp.status < 500)) {
+                if (base !== currentAPIBase) setActiveNode(base);
+                return resp;
+            }
+        } catch(e) { /* network error — try next */ }
+    }
+    throw new Error('All nodes unreachable');
+}
+
+// authFetch — adds JWT bearer header, calls resilientFetch
+async function authFetch(url, opts={}) {
+    opts.headers = opts.headers || {};
+    opts.headers['Authorization'] = `Bearer ${token}`;
+    return resilientFetch(url, opts);
+}
+```
+
+**Key design decisions:**
+- **4xx passes through immediately** — a 409 Conflict (booking rejected) or 422 validation error is an  
+  application response, not a node failure. Do not retry on a peer.
+- **5xx / network error triggers failover** — the peer list is tried left-to-right.
+- **JWT is valid on all nodes** — same `JWT_SECRET` env var on every node, so tokens issued by Node A  
+  are accepted by Node B without re-authentication.
+- **`activePeerAPIs` persisted to `localStorage`** — peer list survives page reload and is available  
+  at the login screen before the user has authenticated.
+- **Topbar indicator** — `setActiveNode(base)` updates `#node-indicator` in the topbar:  
+  `🟢 Primary` when on primary, `⚡ Failover: <ip>:8080` when on a peer (with a warning toast).
+- **Auto-recovery** — `allBases[0]` is always `API` (primary), so the next request after primary  
+  recovers will succeed on primary and the topbar silently returns to `🟢 Primary`.
+
+**Coverage — every API call goes through resilientFetch:**
+
+| Call | Function used |
+|------|--------------|
+| `POST /api/users/login` | `resilientFetch` |
+| `GET /api/users/me` (post-login user fetch) | `resilientFetch` |
+| `POST /api/users/register` | `resilientFetch` |
+| `GET /api/conflicts/routes` (predefined routes) | `resilientFetch` |
+| `GET /health/nodes` (peer list refresh) | `authFetch` |
+| All journey operations (book, list, cancel) | `authFetch` |
+| All vehicle operations | `authFetch` |
+| Dashboard (analytics, points) | `authFetch` |
+| Simulation controls (kill, recover, storm, 2PC) | `authFetch` |
+| Recovery tools (drain-outbox, rebuild-cache) | `authFetch` |
+
+**WebSocket failover** — live notifications survive a primary node crash:
+
+```javascript
+let _wsFailCount = 0;
+
+function connectWS(baseOverride) {
+    const httpBase = baseOverride || currentAPIBase || API;
+    const wsBase = httpBase.replace(/^http/, 'ws');
+    wsConn = new WebSocket(`${wsBase}/ws/notifications/?token=${token}`);
+
+    wsConn.onopen = () => { _wsFailCount = 0; };
+
+    wsConn.onclose = () => {
+        _wsFailCount++;
+        // After 2 consecutive failures, cycle through ALIVE peer WS endpoints
+        const allBases = [API, ...activePeerAPIs.filter(p => p !== API)];
+        const nextBase = (_wsFailCount >= 2 && allBases.length > 1)
+            ? allBases[_wsFailCount % allBases.length]
+            : null;
+        setTimeout(() => connectWS(nextBase || httpBase), Math.min(5000 * _wsFailCount, 30000));
+    };
+}
+```
+
+After 2 consecutive WS close events on the dead primary, the next reconnect attempt targets  
+the next ALIVE peer. Live toast notifications continue flowing from the peer's notification-service.
+
+**What is NOT handled (by design):**
+- RabbitMQ is per-node — live map events from the peer's journeys will not appear on your map  
+  (each node's WS connects to its own notification-service).
+- If ALL nodes are simultaneously unreachable, the app shows "All nodes unreachable" toast.
+
+---
+
 ## API Reference (discovered during testing)
 
 ### User Service (port 8001 / gateway `/api/users/`)
@@ -341,6 +475,20 @@ restarting the container, and immediately triggers a catch-up sync from the new 
 | GET | `/api/analytics/hourly` | none | Hourly breakdown. |
 
 Note: endpoint is `/stats` not `/summary`.
+
+### Admin / Simulation Endpoints (journey-service, via gateway `/admin/`)
+
+| Method | Path | Notes |
+|--------|------|-------|
+| POST | `/admin/simulate/fail` | Kill this node — `/health` → 503, cascades to user-service |
+| POST | `/admin/simulate/recover` | Recover — restores both journey-service and user-service |
+| GET | `/admin/simulate/status` | Returns `node_failed`, `alive_peers`, `total_peers`, peer states |
+| POST | `/admin/peers/register` | Register a peer health URL. Body: `{"name":"...", "health_url":"..."}` |
+| DELETE | `/admin/peers/{name}` | Unregister a peer from health monitoring |
+| POST | `/admin/recovery/drain-outbox` | Force-drain all unpublished outbox events after recovery |
+| POST | `/admin/recovery/rebuild-enforcement-cache` | Rebuild Redis cache from journeys DB |
+| GET | `/health/nodes` | Per-peer ALIVE/SUSPECT/DEAD liveness status |
+| GET | `/health/partitions` | Dependency partition status (postgres, rabbitmq, conflict-service) |
 
 ### Conflict Service (port 8003 / gateway `/api/conflicts/`)
 
@@ -399,6 +547,13 @@ All core distributed systems features verified working:
 | Rejoin-after-downtime sync | ✓ PASS | Periodic 5-min re-sync fills missed bookings |
 | Runtime peer registration | ✓ PASS | POST /internal/peers/register + immediate sync |
 | Node failure detection | ✓ PASS | ALIVE → SUSPECT (3 misses) → DEAD (6 misses) |
+| Full-node failure simulation | ✓ PASS | Kill cascades to user-service; login/all ops return 503 |
+| Client-side failover (login) | ✓ PASS | resilientFetch retries peer on 5xx/network error |
+| Client-side failover (all ops) | ✓ PASS | authFetch covers every authenticated endpoint |
+| JWT cross-node validity | ✓ PASS | Same secret — Node A token accepted by Node B |
+| WebSocket failover | ✓ PASS | Reconnects to peer WS after 2 consecutive failures |
+| Topbar node indicator | ✓ PASS | 🟢 Primary / ⚡ Failover: <ip> updates on each call |
+| Peer list persistence (localStorage) | ✓ PASS | Failover available before login, survives page reload |
 
 **Note on enforcement timing**: Enforcement returns `is_valid=false` for journeys departing >30 min  
 in the future — this is correct behavior, not a bug.
@@ -529,3 +684,9 @@ Or use the **Simulate tab → Register Remote Peer** section in the frontend.
 8. `PEER_CONFLICT_URLS` env var must be exported in the shell **before** running `docker compose up` — or set as a shell variable inline: `PEER_CONFLICT_URLS=http://172.20.10.12:8003 docker compose ... up -d conflict-service`
 9. Conflict-service internal replication endpoints are on **port 8003 direct**, not through the nginx gateway (port 8080). Firewall must allow 8003 on both machines for cross-node replication to work.
 10. Health-monitor peers (ALIVE/SUSPECT/DEAD) are in-memory in journey-service — re-register after every restart via the frontend Simulate tab or curl.
+11. **Node failure simulation is a full-stack cascade** — killing the node via `POST /admin/simulate/fail` sets `_node_failed` in both journey-service and user-service. Login, register, and all booking operations return 503. Recovery via `POST /admin/simulate/recover` restores both.
+12. **Client-side failover uses `resilientFetch`** — every `fetch` call in `app.js` goes through `resilientFetch` (login/register) or `authFetch` (authenticated calls). On 5xx or network error, it retries each ALIVE peer in order. 4xx errors are returned immediately (application errors, not node failures).
+13. **JWT tokens are cross-node valid** — `JWT_SECRET` is the same on every node. A token issued by Node A is accepted by Node B without re-login.
+14. **Peer list is persisted in localStorage** (`jb_peers`) — failover is available at the login screen, before the user authenticates. Updated on every `loadPeerAPIs()` call.
+15. **WebSocket reconnects to peer after 2 failures** — if the primary WS endpoint stays down, `connectWS` cycles through `activePeerAPIs` WS URLs so live notifications keep working.
+16. **Hard-refresh browser after `app.js` changes** (`Cmd+Shift+R`) — frontend is static files served by nginx; no container rebuild needed, but browser cache must be cleared.

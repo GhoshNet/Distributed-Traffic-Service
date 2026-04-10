@@ -10,6 +10,12 @@ let markers = {};
 let layerGroup = null;
 let toastCounter = 0;
 
+// Failover state — peer API bases discovered from /health/nodes.
+// Persisted in localStorage so peers are known even on the login screen
+// before the user has authenticated.
+let activePeerAPIs = JSON.parse(localStorage.getItem('jb_peers') || '[]');
+let currentAPIBase = API;  // tracks which node is currently serving requests
+
 // Geocoding state — stores the selected location objects
 let selectedOrigin = null;
 let selectedDest = null;
@@ -36,14 +42,14 @@ function switchAuth(tab) {
 async function login(e) {
   e.preventDefault();
   try {
-    const r = await fetch(API+'/api/users/login', {
+    const r = await resilientFetch('/api/users/login', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({email: e.target[0].value, password: e.target[1].value})
     });
     const d = await r.json();
     if (!r.ok) throw new Error(parseErrorDetail(d));
     token = d.access_token; localStorage.setItem('jb_token', token);
-    const p = await fetch(API+'/api/users/me', {headers:{'Authorization': `Bearer ${token}`}});
+    const p = await resilientFetch('/api/users/me', {headers:{'Authorization': `Bearer ${token}`}});
     user = await p.json(); localStorage.setItem('jb_user', JSON.stringify(user));
     enterApp();
   } catch(err) { showToast("Login failed: " + err.message, "error"); }
@@ -70,7 +76,7 @@ function parseErrorDetail(data) {
 async function register(e) {
     e.preventDefault();
     try {
-        const r = await fetch(API+'/api/users/register', {
+        const r = await resilientFetch('/api/users/register', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
                 full_name: e.target[0].value, email: e.target[1].value,
@@ -97,6 +103,7 @@ function enterApp() {
   setupAutocomplete();
   loadVehicles();
   loadPredefinedRoutes();   // fetch road network from conflict-service
+  loadPeerAPIs();           // discover peer nodes for automatic failover
   // Set default departure time
   let d = new Date(); d.setHours(d.getHours()+1);
   document.getElementById('j-depart').value = d.toISOString().slice(0,16);
@@ -128,21 +135,47 @@ function initMap() {
   layerGroup = L.layerGroup().addTo(mapInstance);
 }
 
-function connectWS() {
-  wsConn = new WebSocket(`${WS}/ws/notifications/?token=${token}`);
-  wsConn.onopen = () => document.getElementById('ws-dot').className = 'ws-dot connected';
-  wsConn.onclose = () => {
-    document.getElementById('ws-dot').className = 'ws-dot';
-    setTimeout(connectWS, 5000);
+let _wsFailCount = 0;  // consecutive WS close/error count — used to trigger peer failover
+
+function connectWS(baseOverride) {
+  // Derive WS base: prefer override, then currentAPIBase, then API
+  const httpBase = baseOverride || currentAPIBase || API;
+  const wsBase = httpBase.replace(/^http/, 'ws');
+  const url = `${wsBase}/ws/notifications/?token=${token}`;
+
+  const dot = document.getElementById('ws-dot');
+  wsConn = new WebSocket(url);
+
+  wsConn.onopen = () => {
+    dot.className = 'ws-dot connected';
+    _wsFailCount = 0;
+    console.info('[ws] connected to', url);
   };
+
+  wsConn.onclose = () => {
+    dot.className = 'ws-dot';
+    _wsFailCount++;
+    // After 2 consecutive failures on the current base, try the next ALIVE peer WS.
+    // This ensures live notifications survive a primary node crash.
+    const allBases = [API, ...activePeerAPIs.filter(p => p !== API)];
+    const nextBase = (_wsFailCount >= 2 && allBases.length > 1)
+        ? allBases[_wsFailCount % allBases.length]
+        : null;
+    if (nextBase && nextBase !== httpBase) {
+        console.info(`[ws] primary unreachable after ${_wsFailCount} attempts — failing over to ${nextBase}`);
+    }
+    setTimeout(() => connectWS(nextBase || httpBase), Math.min(5000 * _wsFailCount, 30000));
+  };
+
   wsConn.onmessage = e => {
     if(e.data === 'pong') return;
-    try { 
+    try {
       const data = JSON.parse(e.data);
       handleLiveEvent(data);
     } catch {}
   };
-  setInterval(()=> wsConn.readyState===1 && wsConn.send('ping'), 25000);
+
+  setInterval(() => wsConn.readyState === 1 && wsConn.send('ping'), 25000);
 }
 
 function handleLiveEvent(data) {
@@ -171,10 +204,75 @@ function handleLiveEvent(data) {
     }
 }
 
+// loadPeerAPIs — reads registered health peers and extracts their API base URLs.
+// Called on login and after registering a new peer.
+// Uses authFetch so peer list can be refreshed even when the primary node is down.
+async function loadPeerAPIs() {
+    try {
+        const r = await authFetch('/health/nodes');
+        if (!r.ok) return;
+        const data = await r.json();
+        activePeerAPIs = Object.values(data.peers || {})
+            .filter(p => p.status === 'ALIVE' && p.health_url)
+            .map(p => p.health_url.replace(/\/health.*$/, ''));  // "http://x.x.x.x:8080/health" → "http://x.x.x.x:8080"
+        // Persist so failover works at next login even before auth
+        localStorage.setItem('jb_peers', JSON.stringify(activePeerAPIs));
+        if (activePeerAPIs.length > 0) {
+            console.info('[failover] peer nodes available:', activePeerAPIs);
+        }
+    } catch(e) {
+        console.warn('[failover] could not load peer list:', e);
+    }
+}
+
+// setActiveNode — updates the topbar indicator when failover switches nodes.
+function setActiveNode(base) {
+    currentAPIBase = base;
+    const el = document.getElementById('node-indicator');
+    if (!el) return;
+    if (base === API) {
+        el.innerHTML = '🟢 Primary';
+        el.style.color = 'var(--success)';
+    } else {
+        const label = base.replace(/^https?:\/\//, '');
+        el.innerHTML = `⚡ Failover: ${label}`;
+        el.style.color = 'var(--warning)';
+        showToast(`Node failover — now routing to ${label}`, 'warning');
+    }
+}
+
+// resilientFetch — base failover fetch. No auth header.
+// Tries primary node first; on network error or 5xx retries each ALIVE peer.
+// 4xx responses are returned immediately (app errors, not node failures).
+// Used directly by login, register, and any pre-auth calls.
+async function resilientFetch(url, opts={}) {
+    const allBases = [API, ...activePeerAPIs.filter(p => p !== API)];
+
+    for (let i = 0; i < allBases.length; i++) {
+        const base = allBases[i];
+        try {
+            const resp = await fetch(base + url, { ...opts });
+            if (resp.ok || (resp.status >= 400 && resp.status < 500)) {
+                if (base !== currentAPIBase) setActiveNode(base);
+                return resp;
+            }
+            console.warn(`[failover] ${base} returned HTTP ${resp.status}`);
+        } catch(e) {
+            console.warn(`[failover] ${base} unreachable: ${e.message}`);
+        }
+        if (i < allBases.length - 1) {
+            console.info(`[failover] trying next node: ${allBases[i+1]}`);
+        }
+    }
+    throw new Error('All nodes unreachable — check your connection');
+}
+
+// authFetch — resilientFetch with the JWT bearer token attached.
+// Every authenticated API call in the app goes through here.
 async function authFetch(url, opts={}) {
-  opts.headers = opts.headers || {};
-  opts.headers['Authorization'] = `Bearer ${token}`;
-  return fetch(API+url, opts);
+    opts.headers = opts.headers || {};
+    opts.headers['Authorization'] = `Bearer ${token}`;
+    return resilientFetch(url, opts);
 }
 
 // =============================================
@@ -500,7 +598,7 @@ async function loadDashboard() {
 
 async function loadPredefinedRoutes() {
     try {
-        const r = await fetch(API + '/api/conflicts/routes');
+        const r = await resilientFetch('/api/conflicts/routes');
         if (!r.ok) return;
         const data = await r.json();
         predefinedRoutes = data.routes || [];
@@ -856,6 +954,7 @@ async function simRegisterPeer() {
         document.getElementById('peer-name').value = '';
         document.getElementById('peer-url').value = '';
         await loadNodeHealth();
+        await loadPeerAPIs(); // refresh failover peer list
     } catch(e) { simLog(`Error registering peer: ${e}`, 'error'); }
 }
 

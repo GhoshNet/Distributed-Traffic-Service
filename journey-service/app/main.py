@@ -151,26 +151,46 @@ async def node_health():
 @app.post("/admin/simulate/fail")
 async def simulate_node_fail():
     """
-    Simulate a node crash — mirrors Archive's simulate_node_failure().
-    Makes /health return 503 so peer health monitors on other nodes
-    will transition this node through ALIVE → SUSPECT → DEAD.
-    New booking requests are rejected while failed.
+    Simulate a full node crash.
+    - journey-service: /health → 503, all booking endpoints → 503
+    - user-service: cascaded via internal call → login/register → 503
+    Peer health monitors will transition this node ALIVE → SUSPECT → DEAD.
     """
     global _node_failed
     _node_failed = True
-    logger.error("[SIMULATION] Node failure simulated — /health now returns 503")
-    return {"status": "failed", "message": "Node is now simulating a crash. Peers will detect SUSPECT in ~30s, DEAD in ~60s."}
+    logger.error("[SIMULATION] Node failure simulated — cascading to user-service")
+
+    # Cascade to user-service on the same node so login also returns 503.
+    import httpx
+    user_svc = os.getenv("USER_SERVICE_URL", "http://user-service:8000")
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(f"{user_svc}/admin/simulate/fail", timeout=2.0)
+        logger.error("[SIMULATION] user-service failure cascaded")
+    except Exception as e:
+        logger.warning(f"[SIMULATION] Could not cascade to user-service: {e}")
+
+    return {"status": "failed", "message": "Node crash simulated (journey + user services). Peers detect SUSPECT in ~30s, DEAD in ~60s."}
 
 
 @app.post("/admin/simulate/recover")
 async def simulate_node_recover():
     """
-    Recover from simulated failure — mirrors Archive's simulate_node_recovery().
-    Restores /health to 200 so peers transition back to ALIVE.
+    Recover from simulated failure — restores all services on this node.
     """
     global _node_failed
     _node_failed = False
-    logger.info("[SIMULATION] Node recovery — /health restored to 200")
+    logger.info("[SIMULATION] Node recovery — cascading to user-service")
+
+    import httpx
+    user_svc = os.getenv("USER_SERVICE_URL", "http://user-service:8000")
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(f"{user_svc}/admin/simulate/recover", timeout=2.0)
+        logger.info("[SIMULATION] user-service recovery cascaded")
+    except Exception as e:
+        logger.warning(f"[SIMULATION] Could not cascade recovery to user-service: {e}")
+
     return {"status": "recovered", "message": "Node recovered. Peers will detect ALIVE on next heartbeat (~10s)."}
 
 
