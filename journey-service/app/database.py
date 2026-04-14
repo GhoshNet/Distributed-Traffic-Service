@@ -12,12 +12,14 @@ enforcement lookups) to offload the primary. The replica uses streaming
 replication from the primary with eventual consistency (typical lag < 100ms).
 """
 
+import logging
 import os
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy import String, DateTime, Float, Integer, Boolean, Text, func, Index
+from sqlalchemy import String, DateTime, Float, Integer, Boolean, Text, func, Index, text
 from datetime import datetime
 
+logger = logging.getLogger(__name__)
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
@@ -34,7 +36,7 @@ engine = create_async_engine(
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 # Read replica engine — read-heavy queries are routed here to reduce primary load
-# Falls back to primary if no replica URL is configured
+# Falls back to primary if no replica URL is configured, or if replica is unreachable.
 _read_url = DATABASE_READ_URL if DATABASE_READ_URL else DATABASE_URL
 read_engine = create_async_engine(
     _read_url, echo=False, pool_size=20, max_overflow=10,
@@ -151,8 +153,22 @@ class OutboxEvent(Base):
 
 
 async def init_db():
+    global read_session
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    # Probe the read replica. If it is unreachable (e.g. replica not yet running),
+    # fall back to the primary so that GET /api/journeys/ keeps working.
+    if DATABASE_READ_URL and DATABASE_READ_URL != DATABASE_URL:
+        try:
+            async with read_engine.connect() as conn:
+                await conn.execute(text("SELECT 1"))
+            logger.info("Read replica reachable — read queries will use replica")
+        except Exception as exc:
+            logger.warning(
+                "Read replica unreachable (%s) — falling back to primary for reads", exc
+            )
+            read_session = async_session
 
 
 async def get_db() -> AsyncSession:

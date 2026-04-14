@@ -466,6 +466,8 @@ async function loadJourneys() {
         const r = await authFetch('/api/journeys/');
         if(!r.ok) {
             console.error('Failed to load journeys:', r.status, r.statusText);
+            const list = document.getElementById('journey-list');
+            if (list) list.innerHTML = '<div style="color:var(--danger);text-align:center;padding:24px;">Could not load journeys (server error). Please refresh.</div>';
             return;
         }
         const js = await r.json();

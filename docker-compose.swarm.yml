@@ -458,6 +458,8 @@ services:
     image: 127.0.0.1:5000/journey-service:latest
     deploy:
       replicas: 2
+      update_config:
+        monitor: 60s
   conflict-service:
     ports:
     - 8003:8000
