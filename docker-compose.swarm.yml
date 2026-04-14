@@ -215,6 +215,7 @@ services:
       POSTGRES_DB: users_db
       POSTGRES_USER: users_user
       POSTGRES_PASSWORD: users_pass
+      POSTGRES_HOST_AUTH_METHOD: trust
     volumes:
     - pg_users_data:/var/lib/postgresql/data
     command: "postgres\n  -c wal_level=replica\n  -c max_wal_senders=3\n  -c max_replication_slots=3\n\
@@ -231,6 +232,7 @@ services:
     - journey-net
   postgres-users-replica:
     image: postgres:16-alpine
+    user: "70"
     environment:
       PGUSER: users_user
       PGPASSWORD: users_pass
@@ -260,6 +262,7 @@ services:
       POSTGRES_DB: journeys_db
       POSTGRES_USER: journeys_user
       POSTGRES_PASSWORD: journeys_pass
+      POSTGRES_HOST_AUTH_METHOD: trust
     volumes:
     - pg_journeys_data:/var/lib/postgresql/data
     command: "postgres\n  -c wal_level=replica\n  -c max_wal_senders=3\n  -c max_replication_slots=3\n\
@@ -276,6 +279,7 @@ services:
     - journey-net
   postgres-journeys-replica:
     image: postgres:16-alpine
+    user: "70"
     environment:
       PGUSER: journeys_user
       PGPASSWORD: journeys_pass
@@ -305,6 +309,7 @@ services:
       POSTGRES_DB: conflicts_db
       POSTGRES_USER: conflicts_user
       POSTGRES_PASSWORD: conflicts_pass
+      POSTGRES_HOST_AUTH_METHOD: trust
     volumes:
     - pg_conflicts_data:/var/lib/postgresql/data
     command: "postgres\n  -c wal_level=replica\n  -c max_wal_senders=3\n  -c max_replication_slots=3\n\
@@ -321,6 +326,7 @@ services:
     - journey-net
   postgres-conflicts-replica:
     image: postgres:16-alpine
+    user: "70"
     environment:
       PGUSER: conflicts_user
       PGPASSWORD: conflicts_pass
@@ -350,6 +356,7 @@ services:
       POSTGRES_DB: analytics_db
       POSTGRES_USER: analytics_user
       POSTGRES_PASSWORD: analytics_pass
+      POSTGRES_HOST_AUTH_METHOD: trust
     volumes:
     - pg_analytics_data:/var/lib/postgresql/data
     command: "postgres\n  -c wal_level=replica\n  -c max_wal_senders=3\n  -c max_replication_slots=3\n\
@@ -366,6 +373,7 @@ services:
     - journey-net
   postgres-analytics-replica:
     image: postgres:16-alpine
+    user: "70"
     environment:
       PGUSER: analytics_user
       PGPASSWORD: analytics_pass
@@ -467,9 +475,11 @@ services:
     healthcheck:
       test:
       - CMD
-      - python
-      - -c
-      - import urllib.request; urllib.request.urlopen('http://localhost:8000/health')
+      - wget
+      - --quiet
+      - --tries=1
+      - --spider
+      - http://localhost:8000/health
       interval: 15s
       timeout: 10s
       retries: 3
@@ -552,9 +562,11 @@ services:
     healthcheck:
       test:
       - CMD
-      - python
-      - -c
-      - import urllib.request; urllib.request.urlopen('http://localhost:8000/health')
+      - wget
+      - --quiet
+      - --tries=1
+      - --spider
+      - http://localhost:8000/health
       interval: 15s
       timeout: 10s
       retries: 3

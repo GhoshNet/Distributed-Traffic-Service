@@ -1,0 +1,54 @@
+CS7NS6 Distributed Systems 2025-2026
+
+Exercise 2
+
+Implementing a Globally-accessible Distributed Service
+
+Final Report Outline
+
+The final report should include chapters addressing the following
+issues:
+
+1.  Requirements: Describe the functionality provided and outline the
+    functional and non-functional requirements addressed in its design.
+
+2.  Specification: Provide a detailed specification of the functionality
+    provided by your system, including:
+
+-   The services it is composed of
+-   Their APIs
+-   System behaviour in the presence of faults
+
+Ensure consistency with what you demonstrate. Clearly state any
+requirements that are not fully addressed.
+
+3.  Architecture and Design: Describe the system’s technical and
+    software architecture.
+
+-   Explain runtime services and how they are distributed/connected
+-   Each team member must describe the design of their most significant
+    service
+
+4.  Implementation: Describe system operation, including:
+
+-   Behavioural diagrams for key algorithms
+-   Handling of important failure modes
+-   Algorithms such as: • Failure detection
+    • Consensus on group membership
+    • Partition tolerance
+
+5.  Testing: Outline:
+
+-   Test plan
+-   Test results
+
+6.  Allocation of Work: Describe how work was distributed among team
+    members.
+
+7.  Summary: Summarise overall achievements.
+
+Additional Notes:
+
+-   Maximum length: 20 pages (can be shorter)
+-   Use diagrams where appropriate
+-   Report must be signed by all group members
