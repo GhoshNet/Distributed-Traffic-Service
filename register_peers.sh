@@ -46,6 +46,26 @@ for label in A B C D; do
         [ "$HTTP" = "200" ] || [ "$HTTP" = "204" ] \
             && success "Conflict peer laptop-$label ($ip:8003) registered + catch-up triggered" \
             || warn    "Conflict peer laptop-$label: HTTP $HTTP (is it up?)"
+
+        # Register journey-service replication peer + trigger catch-up sync
+        HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST http://localhost:8080/internal/journeys/peers/register \
+            -H "Content-Type: application/json" \
+            -d "{\"peer_url\": \"http://${ip}:8080\"}" \
+            2>/dev/null || echo "000")
+        [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ] \
+            && success "Journey peer laptop-$label ($ip:8080) registered + catch-up triggered" \
+            || warn    "Journey peer laptop-$label: HTTP $HTTP (is it up?)"
+
+        # Register user-service replication peer + trigger catch-up sync
+        HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST http://localhost:8080/internal/peers/register \
+            -H "Content-Type: application/json" \
+            -d "{\"peer_url\": \"http://${ip}:8080\"}" \
+            2>/dev/null || echo "000")
+        [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ] \
+            && success "User peer laptop-$label ($ip:8080) registered + catch-up triggered" \
+            || warn    "User peer laptop-$label: HTTP $HTTP (is it up?)"
     fi
 done
 

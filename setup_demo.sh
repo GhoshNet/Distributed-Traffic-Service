@@ -53,6 +53,7 @@ esac
 # Build peer lists (all IPs except mine)
 PEER_CONFLICT_URLS=""
 PEER_USER_URLS=""
+PEER_JOURNEY_URLS=""
 for label in A B C D; do
     case "$label" in
         A) ip="$IP_A" ;;
@@ -63,6 +64,7 @@ for label in A B C D; do
     if [ "$label" != "$MY_LABEL" ]; then
         PEER_CONFLICT_URLS="${PEER_CONFLICT_URLS:+$PEER_CONFLICT_URLS,}http://$ip:8003"
         PEER_USER_URLS="${PEER_USER_URLS:+$PEER_USER_URLS,}http://$ip:8080"
+        PEER_JOURNEY_URLS="${PEER_JOURNEY_URLS:+$PEER_JOURNEY_URLS,}http://$ip:8080"
     fi
 done
 
@@ -74,6 +76,7 @@ echo "============================================="
 echo ""
 info "Peer conflict URLs : $PEER_CONFLICT_URLS"
 info "Peer user URLs     : $PEER_USER_URLS"
+info "Peer journey URLs  : $PEER_JOURNEY_URLS"
 echo ""
 
 # ── Step 1: Verify we're on the right IP ──────────────────────────────────────
@@ -103,6 +106,7 @@ info "Writing .env..."
 cat > .env <<EOF
 PEER_CONFLICT_URLS=$PEER_CONFLICT_URLS
 PEER_USER_URLS=$PEER_USER_URLS
+PEER_JOURNEY_URLS=$PEER_JOURNEY_URLS
 MY_LABEL=$MY_LABEL
 IP_A=$IP_A
 IP_B=$IP_B
@@ -124,6 +128,7 @@ fi
 # ── Step 5: Export env and deploy ─────────────────────────────────────────────
 export PEER_CONFLICT_URLS
 export PEER_USER_URLS
+export PEER_JOURNEY_URLS
 
 info "Building images and deploying stack..."
 ./deploy-swarm.sh
@@ -199,6 +204,18 @@ for label in A B C D; do
             success "Conflict sync registered with laptop-$label ($ip:8003)"
         else
             warn "Conflict sync to laptop-$label returned HTTP $HTTP — may still be starting"
+        fi
+
+        # Trigger journey catch-up sync
+        HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST http://localhost:8080/internal/journeys/peers/register \
+            -H "Content-Type: application/json" \
+            -d "{\"peer_url\": \"http://${ip}:8080\"}" \
+            2>/dev/null || echo "000")
+        if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
+            success "Journey sync registered with laptop-$label ($ip:8080)"
+        else
+            warn "Journey sync to laptop-$label returned HTTP $HTTP — may still be starting"
         fi
     fi
 done

@@ -68,12 +68,17 @@ services:
       - rabbitmq-diagnostics
       - -q
       - ping
-      interval: 10s
-      timeout: 5s
+      interval: 30s
+      timeout: 10s
       retries: 5
+      start_period: 30s
     restart: unless-stopped
     networks:
     - journey-net
+    deploy:
+      resources:
+        limits:
+          memory: 768M
   rabbitmq-2:
     image: rabbitmq:3.13-management-alpine
     hostname: rabbitmq-2
@@ -85,11 +90,16 @@ services:
       RABBITMQ_NODENAME: rabbit@rabbitmq-2
     volumes:
     - rabbitmq_data_2:/var/lib/rabbitmq
-    command: 'sh -c " rabbitmq-server -detached && sleep 10 && rabbitmqctl stop_app
-      && rabbitmqctl join_cluster rabbit@rabbitmq && rabbitmqctl start_app && sleep
-      infinity "
-
-      '
+    command:
+    - sh
+    - -c
+    - |
+      rabbitmq-server -detached
+      sleep 15
+      rabbitmqctl stop_app
+      rabbitmqctl join_cluster rabbit@rabbitmq || true
+      rabbitmqctl start_app
+      sleep infinity
     depends_on:
     - rabbitmq
     healthcheck:
@@ -98,12 +108,17 @@ services:
       - rabbitmq-diagnostics
       - -q
       - ping
-      interval: 10s
-      timeout: 5s
+      interval: 30s
+      timeout: 10s
       retries: 5
+      start_period: 60s
     restart: unless-stopped
     networks:
     - journey-net
+    deploy:
+      resources:
+        limits:
+          memory: 512M
   rabbitmq-3:
     image: rabbitmq:3.13-management-alpine
     hostname: rabbitmq-3
@@ -115,11 +130,16 @@ services:
       RABBITMQ_NODENAME: rabbit@rabbitmq-3
     volumes:
     - rabbitmq_data_3:/var/lib/rabbitmq
-    command: 'sh -c " rabbitmq-server -detached && sleep 15 && rabbitmqctl stop_app
-      && rabbitmqctl join_cluster rabbit@rabbitmq && rabbitmqctl start_app && sleep
-      infinity "
-
-      '
+    command:
+    - sh
+    - -c
+    - |
+      rabbitmq-server -detached
+      sleep 20
+      rabbitmqctl stop_app
+      rabbitmqctl join_cluster rabbit@rabbitmq || true
+      rabbitmqctl start_app
+      sleep infinity
     depends_on:
     - rabbitmq-2
     healthcheck:
@@ -128,12 +148,17 @@ services:
       - rabbitmq-diagnostics
       - -q
       - ping
-      interval: 10s
-      timeout: 5s
+      interval: 30s
+      timeout: 10s
       retries: 5
+      start_period: 60s
     restart: unless-stopped
     networks:
     - journey-net
+    deploy:
+      resources:
+        limits:
+          memory: 512M
   redis:
     image: redis:7-alpine
     ports:
@@ -171,7 +196,12 @@ services:
     - journey-net
   redis-sentinel:
     image: redis:7-alpine
-    command: "sh -c \"until REDIS_IP=$$(getent hosts redis | awk '{print $$1}') && [ -n \\\"$$REDIS_IP\\\" ]; do sleep 2; done && echo \\\"sentinel monitor mymaster $$REDIS_IP 6379 2\\\" > /tmp/sentinel.conf && echo 'sentinel down-after-milliseconds mymaster 5000' >> /tmp/sentinel.conf && echo 'sentinel failover-timeout mymaster 10000' >> /tmp/sentinel.conf && echo 'sentinel parallel-syncs mymaster 1' >> /tmp/sentinel.conf && redis-sentinel /tmp/sentinel.conf\""
+    command:
+    - sh
+    - -c
+    - |
+      printf 'sentinel monitor mymaster redis 6379 2\nsentinel down-after-milliseconds mymaster 5000\nsentinel failover-timeout mymaster 10000\nsentinel parallel-syncs mymaster 1\n' > /tmp/sentinel.conf
+      exec redis-sentinel /tmp/sentinel.conf
     ports:
     - 26379:26379
     depends_on:
@@ -182,7 +212,12 @@ services:
     - journey-net
   redis-sentinel-2:
     image: redis:7-alpine
-    command: "sh -c \"until REDIS_IP=$$(getent hosts redis | awk '{print $$1}') && [ -n \\\"$$REDIS_IP\\\" ]; do sleep 2; done && echo \\\"sentinel monitor mymaster $$REDIS_IP 6379 2\\\" > /tmp/sentinel.conf && echo 'sentinel down-after-milliseconds mymaster 5000' >> /tmp/sentinel.conf && echo 'sentinel failover-timeout mymaster 10000' >> /tmp/sentinel.conf && echo 'sentinel parallel-syncs mymaster 1' >> /tmp/sentinel.conf && redis-sentinel /tmp/sentinel.conf\""
+    command:
+    - sh
+    - -c
+    - |
+      printf 'sentinel monitor mymaster redis 6379 2\nsentinel down-after-milliseconds mymaster 5000\nsentinel failover-timeout mymaster 10000\nsentinel parallel-syncs mymaster 1\n' > /tmp/sentinel.conf
+      exec redis-sentinel /tmp/sentinel.conf
     depends_on:
     - redis
     - redis-replica
@@ -191,7 +226,12 @@ services:
     - journey-net
   redis-sentinel-3:
     image: redis:7-alpine
-    command: "sh -c \"until REDIS_IP=$$(getent hosts redis | awk '{print $$1}') && [ -n \\\"$$REDIS_IP\\\" ]; do sleep 2; done && echo \\\"sentinel monitor mymaster $$REDIS_IP 6379 2\\\" > /tmp/sentinel.conf && echo 'sentinel down-after-milliseconds mymaster 5000' >> /tmp/sentinel.conf && echo 'sentinel failover-timeout mymaster 10000' >> /tmp/sentinel.conf && echo 'sentinel parallel-syncs mymaster 1' >> /tmp/sentinel.conf && redis-sentinel /tmp/sentinel.conf\""
+    command:
+    - sh
+    - -c
+    - |
+      printf 'sentinel monitor mymaster redis 6379 2\nsentinel down-after-milliseconds mymaster 5000\nsentinel failover-timeout mymaster 10000\nsentinel parallel-syncs mymaster 1\n' > /tmp/sentinel.conf
+      exec redis-sentinel /tmp/sentinel.conf
     depends_on:
     - redis
     - redis-replica
@@ -207,6 +247,9 @@ services:
       POSTGRES_HOST_AUTH_METHOD: trust
     volumes:
     - pg_users_data:/var/lib/postgresql/data
+    - type: bind
+      source: ./postgres-init
+      target: /docker-entrypoint-initdb.d
     command: "postgres\n  -c wal_level=replica\n  -c max_wal_senders=3\n  -c max_replication_slots=3\n\
       \  -c hot_standby=on\n"
     healthcheck:
@@ -253,6 +296,9 @@ services:
       POSTGRES_HOST_AUTH_METHOD: trust
     volumes:
     - pg_journeys_data:/var/lib/postgresql/data
+    - type: bind
+      source: ./postgres-init
+      target: /docker-entrypoint-initdb.d
     command: "postgres\n  -c wal_level=replica\n  -c max_wal_senders=3\n  -c max_replication_slots=3\n\
       \  -c hot_standby=on\n"
     healthcheck:
@@ -299,6 +345,9 @@ services:
       POSTGRES_HOST_AUTH_METHOD: trust
     volumes:
     - pg_conflicts_data:/var/lib/postgresql/data
+    - type: bind
+      source: ./postgres-init
+      target: /docker-entrypoint-initdb.d
     command: "postgres\n  -c wal_level=replica\n  -c max_wal_senders=3\n  -c max_replication_slots=3\n\
       \  -c hot_standby=on\n"
     healthcheck:
@@ -345,6 +394,9 @@ services:
       POSTGRES_HOST_AUTH_METHOD: trust
     volumes:
     - pg_analytics_data:/var/lib/postgresql/data
+    - type: bind
+      source: ./postgres-init
+      target: /docker-entrypoint-initdb.d
     command: "postgres\n  -c wal_level=replica\n  -c max_wal_senders=3\n  -c max_replication_slots=3\n\
       \  -c hot_standby=on\n"
     healthcheck:
@@ -424,6 +476,7 @@ services:
       JWT_SECRET: keefkfwjNBEFINoodwoedibIOEJFKWNFIjjjdIIIOOP
       SERVICE_NAME: journey-service
       PEER_CONFLICT_URLS: ${PEER_CONFLICT_URLS:-}
+      PEER_JOURNEY_URLS: ${PEER_JOURNEY_URLS:-}
     depends_on:
     - postgres-journeys
     - redis
