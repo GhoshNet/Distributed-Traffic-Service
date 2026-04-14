@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .database import init_db
 from .routes import router
+from .internal_routes import internal_router
 from shared.config import setup_logging
 import asyncio
 import os
@@ -44,6 +45,15 @@ async def lifespan(app: FastAPI):
     logger.info("Journey Service starting up...")
     await init_db()
     logger.info("Database tables created/verified")
+
+    # Load peer URLs and trigger catch-up sync from all peers
+    from .replication import load_peers, sync_from_peer, start_periodic_sync
+    from .database import async_session as _async_session
+    peers = load_peers()
+    for peer in peers:
+        asyncio.create_task(sync_from_peer(peer, _async_session))
+        logger.info(f"[journey-replication] catch-up sync scheduled from {peer}")
+    start_periodic_sync(300, _async_session)  # re-sync every 5 minutes
 
     try:
         broker = await get_broker()
@@ -119,6 +129,7 @@ app.add_middleware(
 )
 
 app.include_router(router)
+app.include_router(internal_router)
 
 
 @app.get("/health")

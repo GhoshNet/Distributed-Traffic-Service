@@ -129,6 +129,11 @@ class JourneyService:
             except Exception as e:
                 logger.warning(f"Failed to award booking points: {e}")
 
+        # Replicate to peers (fire-and-forget)
+        import asyncio
+        from .replication import replicate_journey
+        asyncio.create_task(replicate_journey(JourneyService._to_dict(journey)))
+
         return JourneyService._to_response(journey)
 
     @staticmethod
@@ -213,6 +218,12 @@ class JourneyService:
             logger.warning(f"Could not deduct cancellation points: {e}")
 
         logger.info(f"Journey {journey_id} cancelled by user {user_id}")
+
+        # Replicate cancellation to peers
+        import asyncio
+        from .replication import replicate_journey
+        asyncio.create_task(replicate_journey(JourneyService._to_dict(journey)))
+
         return JourneyService._to_response(journey)
 
     @staticmethod
@@ -290,6 +301,29 @@ class JourneyService:
         except Exception as e:
             logger.error(f"Vehicle verification error: {e}")
             raise ValueError("Vehicle verification failed. Please try again.")
+
+    @staticmethod
+    def _to_dict(journey: Journey) -> dict:
+        """Serialize a Journey to a plain dict for cross-peer replication."""
+        return {
+            "id": journey.id,
+            "user_id": journey.user_id,
+            "origin": journey.origin,
+            "destination": journey.destination,
+            "origin_lat": journey.origin_lat,
+            "origin_lng": journey.origin_lng,
+            "destination_lat": journey.destination_lat,
+            "destination_lng": journey.destination_lng,
+            "departure_time": journey.departure_time.isoformat() if journey.departure_time else None,
+            "estimated_duration_minutes": journey.estimated_duration_minutes,
+            "estimated_arrival_time": journey.estimated_arrival_time.isoformat() if journey.estimated_arrival_time else None,
+            "vehicle_registration": journey.vehicle_registration,
+            "vehicle_type": journey.vehicle_type,
+            "status": journey.status,
+            "rejection_reason": journey.rejection_reason,
+            "route_id": journey.route_id,
+            "idempotency_key": journey.idempotency_key,
+        }
 
     @staticmethod
     def _to_response(journey: Journey) -> JourneyResponse:

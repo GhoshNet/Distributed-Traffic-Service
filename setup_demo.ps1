@@ -1,19 +1,20 @@
 # =============================================================================
-# setup_demo.ps1 — 4-laptop distributed demo setup (Windows PowerShell)
+# setup_demo.ps1 — distributed demo setup (2–10 laptops, Windows PowerShell)
 #
 # Usage (run in PowerShell as Administrator):
-#   .\setup_demo.ps1 -Label B -IpA 172.20.10.2 -IpB 172.20.10.3 -IpC 172.20.10.4 -IpD 172.20.10.5
+#   .\setup_demo.ps1 -Label B -Ips 172.20.10.2,172.20.10.3,172.20.10.4,172.20.10.5
 #
-# Labels: A, B, C, D  — tells the script which IP is yours
-# IPs: pass all 4 in order A B C D, same order on every laptop
+# Labels are assigned in order: first IP = A, second = B, etc.
+# Pass ALL laptops' IPs in the same fixed order on every laptop.
+#
+# Examples:
+#   2 laptops, you are A:  .\setup_demo.ps1 -Label A -Ips 192.168.1.10,192.168.1.11
+#   4 laptops, you are B:  .\setup_demo.ps1 -Label B -Ips 172.20.10.2,172.20.10.3,172.20.10.4,172.20.10.5
 # =============================================================================
 
 param(
-    [Parameter(Mandatory=$true)][ValidateSet("A","B","C","D")][string]$Label,
-    [Parameter(Mandatory=$true)][string]$IpA,
-    [Parameter(Mandatory=$true)][string]$IpB,
-    [Parameter(Mandatory=$true)][string]$IpC,
-    [Parameter(Mandatory=$true)][string]$IpD
+    [Parameter(Mandatory=$true)][string]$Label,
+    [Parameter(Mandatory=$true)][string]$Ips
 )
 
 $ErrorActionPreference = "Stop"
@@ -23,18 +24,34 @@ function Success($msg) { Write-Host "[OK] $msg"   -ForegroundColor Green }
 function Warn($msg)    { Write-Host "[WARN] $msg" -ForegroundColor Yellow }
 function Err($msg)     { Write-Host "[ERROR] $msg" -ForegroundColor Red; exit 1 }
 
-# Map label to own IP
-$IpMap = @{ A=$IpA; B=$IpB; C=$IpC; D=$IpD }
-$MyIp = $IpMap[$Label]
+$AllLabels = @('A','B','C','D','E','F','G','H','I','J')
+$Label = $Label.ToUpper()
+$IpList = $Ips -split ','
+$N = $IpList.Count
 
-# Build peer lists (all except self)
-$PeerConflictUrls = ($IpMap.GetEnumerator() | Where-Object { $_.Key -ne $Label } | ForEach-Object { "http://$($_.Value):8003" }) -join ","
-$PeerUserUrls     = ($IpMap.GetEnumerator() | Where-Object { $_.Key -ne $Label } | ForEach-Object { "http://$($_.Value):8080" }) -join ","
+if ($N -lt 2) { Err "Need at least 2 IPs. Got: $N" }
+
+$MyIndex = $AllLabels.IndexOf($Label)
+if ($MyIndex -eq -1) { Err "Label must be A-J, got '$Label'" }
+if ($MyIndex -ge $N) { Err "Label '$Label' is position $($MyIndex+1) but only $N IPs provided" }
+
+$MyIp = $IpList[$MyIndex]
+
+# Build peer lists
+$PeerConflictList = @(); $PeerUserList = @()
+for ($i = 0; $i -lt $N; $i++) {
+    if ($i -ne $MyIndex) {
+        $PeerConflictList += "http://$($IpList[$i]):8003"
+        $PeerUserList     += "http://$($IpList[$i]):8080"
+    }
+}
+$PeerConflictUrls = $PeerConflictList -join ","
+$PeerUserUrls     = $PeerUserList -join ","
 
 Write-Host ""
 Write-Host "=============================================" -ForegroundColor White
 Write-Host " Distributed Traffic System — Demo Setup"    -ForegroundColor White
-Write-Host " Laptop $Label  |  My IP: $MyIp"             -ForegroundColor White
+Write-Host " Laptop $Label  |  My IP: $MyIp  |  Nodes: $N" -ForegroundColor White
 Write-Host "=============================================" -ForegroundColor White
 Write-Host ""
 Info "Peer conflict URLs : $PeerConflictUrls"
@@ -71,15 +88,11 @@ if ($swarmState -notmatch "active") {
 
 # Step 3: Write .env
 Info "Writing .env..."
-@"
-PEER_CONFLICT_URLS=$PeerConflictUrls
-PEER_USER_URLS=$PeerUserUrls
-MY_LABEL=$Label
-IP_A=$IpA
-IP_B=$IpB
-IP_C=$IpC
-IP_D=$IpD
-"@ | Set-Content .env -Encoding UTF8
+$envContent = "PEER_CONFLICT_URLS=$PeerConflictUrls`nPEER_USER_URLS=$PeerUserUrls`nMY_LABEL=$Label`nNODE_COUNT=$N`n"
+for ($i = 0; $i -lt $N; $i++) {
+    $envContent += "IP_$($AllLabels[$i])=$($IpList[$i])`n"
+}
+$envContent | Set-Content .env -Encoding UTF8
 Success ".env written"
 
 # Step 4: Local registry
@@ -98,8 +111,7 @@ $env:PEER_CONFLICT_URLS = $PeerConflictUrls
 $env:PEER_USER_URLS     = $PeerUserUrls
 
 Info "Building images and deploying stack..."
-.\deploy-swarm.sh   # Git Bash / WSL will handle this
-# If the above fails, try: bash deploy-swarm.sh
+bash deploy-swarm.sh
 
 # Step 6: Wait for services
 Write-Host ""
@@ -128,16 +140,15 @@ try {
 Write-Host ""
 Info "Registering peer health monitors..."
 Start-Sleep 5
-foreach ($key in $IpMap.Keys) {
-    if ($key -ne $Label) {
-        $ip = $IpMap[$key]
+for ($i = 0; $i -lt $N; $i++) {
+    if ($i -ne $MyIndex) {
+        $lbl = $AllLabels[$i]; $ip = $IpList[$i]
         try {
-            $body = '{"name": "laptop-' + $key + '", "health_url": "http://' + $ip + ':8080/health"}'
+            $body = '{"name": "laptop-' + $lbl + '", "health_url": "http://' + $ip + ':8080/health"}'
             $r = Invoke-WebRequest -Uri "http://localhost:8080/admin/peers/register" `
-                -Method POST -Body $body -ContentType "application/json" `
-                -UseBasicParsing -TimeoutSec 5
-            if ($r.StatusCode -in 200,201) { Success "Registered peer laptop-$key ($ip)" }
-        } catch { Warn "Could not register laptop-$key yet — run .\register_peers.ps1 after all nodes are up" }
+                -Method POST -Body $body -ContentType "application/json" -UseBasicParsing -TimeoutSec 5
+            if ($r.StatusCode -in 200,201) { Success "Registered peer laptop-$lbl ($ip)" }
+        } catch { Warn "Could not register laptop-$lbl yet — run .\register_peers.ps1 after all nodes are up" }
     }
 }
 
@@ -145,33 +156,32 @@ foreach ($key in $IpMap.Keys) {
 Write-Host ""
 Info "Triggering conflict-service catch-up sync..."
 Start-Sleep 2
-foreach ($key in $IpMap.Keys) {
-    if ($key -ne $Label) {
-        $ip = $IpMap[$key]
+for ($i = 0; $i -lt $N; $i++) {
+    if ($i -ne $MyIndex) {
+        $lbl = $AllLabels[$i]; $ip = $IpList[$i]
         try {
             $body = '{"peer_url": "http://' + $ip + ':8003"}'
             $r = Invoke-WebRequest -Uri "http://localhost:8003/internal/peers/register" `
-                -Method POST -Body $body -ContentType "application/json" `
-                -UseBasicParsing -TimeoutSec 5
-            if ($r.StatusCode -in 200,204) { Success "Conflict sync registered with laptop-$key ($ip)" }
-        } catch { Warn "Conflict sync to laptop-$key not ready yet" }
+                -Method POST -Body $body -ContentType "application/json" -UseBasicParsing -TimeoutSec 5
+            if ($r.StatusCode -in 200,204) { Success "Conflict sync registered with laptop-$lbl ($ip)" }
+        } catch { Warn "Conflict sync to laptop-$lbl not ready yet" }
     }
 }
 
 Write-Host ""
 Write-Host "=============================================" -ForegroundColor Green
-Write-Host " Setup complete — Laptop $Label"              -ForegroundColor Green
+Write-Host " Setup complete — Laptop $Label ($N nodes)"   -ForegroundColor Green
 Write-Host "=============================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "  Frontend:    http://localhost:3000"
 Write-Host "  API Gateway: http://localhost:8080"
 Write-Host "  RabbitMQ UI: http://localhost:15672  (journey_admin / journey_pass)"
 Write-Host ""
-Write-Host "  Peer IPs:"
-foreach ($key in @("A","B","C","D")) {
-    $ip = $IpMap[$key]
-    if ($key -eq $Label) { Write-Host "    Laptop $key`: $ip  <- YOU" -ForegroundColor Green }
-    else                  { Write-Host "    Laptop $key`: $ip" }
+Write-Host "  All nodes:"
+for ($i = 0; $i -lt $N; $i++) {
+    $lbl = $AllLabels[$i]; $ip = $IpList[$i]
+    if ($i -eq $MyIndex) { Write-Host "    Laptop $lbl`: $ip  <- YOU" -ForegroundColor Green }
+    else                  { Write-Host "    Laptop $lbl`: $ip" }
 }
 Write-Host ""
 Write-Host "  Kill this node:"
