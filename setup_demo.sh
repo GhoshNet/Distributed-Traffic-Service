@@ -1,15 +1,19 @@
 #!/bin/bash
 # =============================================================================
-# setup_demo.sh — 4-laptop distributed demo setup
+# setup_demo.sh — distributed demo setup (2–10 laptops)
 #
 # Usage:
-#   ./setup_demo.sh <your-label> <ip-A> <ip-B> <ip-C> <ip-D>
+#   ./setup_demo.sh <your-label> <ip-1> <ip-2> [ip-3] ... [ip-N]
 #
-# Example (you are laptop B):
-#   ./setup_demo.sh B 172.20.10.2 172.20.10.3 172.20.10.4 172.20.10.5
+# Labels are assigned in order: first IP = A, second = B, third = C, etc.
+# Pass ALL laptops' IPs in the same fixed order every time.
 #
-# Labels: A, B, C, D  — just tells the script which IP is yours
-# IPs: pass all 4 in order A B C D every time, same order on every laptop
+# Examples:
+#   2 laptops (you are A):  ./setup_demo.sh A 172.20.10.2 172.20.10.3
+#   4 laptops (you are B):  ./setup_demo.sh B 172.20.10.2 172.20.10.3 172.20.10.4 172.20.10.5
+#   6 laptops (you are C):  ./setup_demo.sh C 172.20.10.2 172.20.10.3 172.20.10.4 172.20.10.5 172.20.10.6 172.20.10.7
+#
+# Get your hotspot IP: ipconfig getifaddr en0
 # =============================================================================
 set -e
 
@@ -20,48 +24,57 @@ warn()    { echo -e "${YELLOW}[WARN]${NC} $*"; }
 error()   { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 
 # ── Parse arguments ────────────────────────────────────────────────────────────
-if [ $# -ne 5 ]; then
+if [ $# -lt 3 ]; then
     echo ""
-    echo "Usage: ./setup_demo.sh <your-label> <ip-A> <ip-B> <ip-C> <ip-D>"
+    echo "Usage: ./setup_demo.sh <your-label> <ip-1> <ip-2> [ip-3] ... [ip-N]"
     echo ""
-    echo "  <your-label>  Which laptop you are: A, B, C, or D"
-    echo "  <ip-A..D>     Hotspot IPs of all 4 laptops in fixed order"
+    echo "  <your-label>  Which laptop you are: A, B, C, ... (matches position of your IP)"
+    echo "  <ip-1..N>     IPs of ALL laptops in a fixed order (same order on every laptop)"
     echo ""
-    echo "Example (you are laptop C):"
-    echo "  ./setup_demo.sh C 172.20.10.2 172.20.10.3 172.20.10.4 172.20.10.5"
+    echo "  Minimum: 2 laptops (2 IPs). Maximum: 10 (labels A–J)."
     echo ""
-    echo "Get your hotspot IP with:"
-    echo "  ipconfig getifaddr en0"
+    echo "Examples:"
+    echo "  2 laptops, you are A:  ./setup_demo.sh A 192.168.1.10 192.168.1.11"
+    echo "  4 laptops, you are B:  ./setup_demo.sh B 172.20.10.2 172.20.10.3 172.20.10.4 172.20.10.5"
+    echo ""
+    echo "Get your hotspot IP with:  ipconfig getifaddr en0"
     echo ""
     exit 1
 fi
 
 MY_LABEL=$(echo "$1" | tr '[:lower:]' '[:upper:]')
-IP_A="$2"
-IP_B="$3"
-IP_C="$4"
-IP_D="$5"
+shift  # remaining args are IPs
 
-case "$MY_LABEL" in
-    A) MY_IP="$IP_A" ;;
-    B) MY_IP="$IP_B" ;;
-    C) MY_IP="$IP_C" ;;
-    D) MY_IP="$IP_D" ;;
-    *) error "Label must be A, B, C, or D — got '$MY_LABEL'" ;;
-esac
+# Build IP array from remaining args
+IPS=("$@")
+N=${#IPS[@]}
+
+# Validate label
+LABELS=(A B C D E F G H I J)
+MY_INDEX=-1
+for i in "${!LABELS[@]}"; do
+    if [ "${LABELS[$i]}" = "$MY_LABEL" ]; then
+        MY_INDEX=$i
+        break
+    fi
+done
+
+if [ "$MY_INDEX" -eq -1 ]; then
+    error "Label must be A–J, got '$MY_LABEL'"
+fi
+if [ "$MY_INDEX" -ge "$N" ]; then
+    error "Label '$MY_LABEL' is position $((MY_INDEX+1)) but only $N IPs were provided"
+fi
+
+MY_IP="${IPS[$MY_INDEX]}"
 
 # Build peer lists (all IPs except mine)
 PEER_CONFLICT_URLS=""
 PEER_USER_URLS=""
 PEER_JOURNEY_URLS=""
-for label in A B C D; do
-    case "$label" in
-        A) ip="$IP_A" ;;
-        B) ip="$IP_B" ;;
-        C) ip="$IP_C" ;;
-        D) ip="$IP_D" ;;
-    esac
-    if [ "$label" != "$MY_LABEL" ]; then
+for i in "${!IPS[@]}"; do
+    if [ "$i" -ne "$MY_INDEX" ]; then
+        ip="${IPS[$i]}"
         PEER_CONFLICT_URLS="${PEER_CONFLICT_URLS:+$PEER_CONFLICT_URLS,}http://$ip:8003"
         PEER_USER_URLS="${PEER_USER_URLS:+$PEER_USER_URLS,}http://$ip:8080"
         PEER_JOURNEY_URLS="${PEER_JOURNEY_URLS:+$PEER_JOURNEY_URLS,}http://$ip:8080"
@@ -71,12 +84,11 @@ done
 echo ""
 echo "============================================="
 echo " Distributed Traffic System — Demo Setup"
-echo " Laptop $MY_LABEL  |  My IP: $MY_IP"
+echo " Laptop $MY_LABEL  |  My IP: $MY_IP  |  Nodes: $N"
 echo "============================================="
 echo ""
 info "Peer conflict URLs : $PEER_CONFLICT_URLS"
 info "Peer user URLs     : $PEER_USER_URLS"
-info "Peer journey URLs  : $PEER_JOURNEY_URLS"
 echo ""
 
 # ── Step 1: Verify we're on the right IP ──────────────────────────────────────
@@ -103,16 +115,16 @@ fi
 
 # ── Step 3: Write .env ────────────────────────────────────────────────────────
 info "Writing .env..."
-cat > .env <<EOF
-PEER_CONFLICT_URLS=$PEER_CONFLICT_URLS
-PEER_USER_URLS=$PEER_USER_URLS
-PEER_JOURNEY_URLS=$PEER_JOURNEY_URLS
-MY_LABEL=$MY_LABEL
-IP_A=$IP_A
-IP_B=$IP_B
-IP_C=$IP_C
-IP_D=$IP_D
-EOF
+{
+    echo "PEER_CONFLICT_URLS=$PEER_CONFLICT_URLS"
+    echo "PEER_USER_URLS=$PEER_USER_URLS"
+    echo "PEER_JOURNEY_URLS=$PEER_JOURNEY_URLS"
+    echo "MY_LABEL=$MY_LABEL"
+    echo "NODE_COUNT=$N"
+    for i in "${!IPS[@]}"; do
+        echo "IP_${LABELS[$i]}=${IPS[$i]}"
+    done
+} > .env
 success ".env written"
 
 # ── Step 4: Start local registry ──────────────────────────────────────────────
@@ -158,18 +170,14 @@ else
     warn "Gateway returned HTTP $HEALTH — services may still be starting. Try: curl http://localhost:8080/health"
 fi
 
-# ── Step 8: Register peers via live API (no restart needed) ──────────────────
+# ── Step 8: Register peers via live API ───────────────────────────────────────
 echo ""
 info "Registering peer health monitors (POST /admin/peers/register)..."
 sleep 5
-for label in A B C D; do
-    case "$label" in
-        A) ip="$IP_A" ;;
-        B) ip="$IP_B" ;;
-        C) ip="$IP_C" ;;
-        D) ip="$IP_D" ;;
-    esac
-    if [ "$label" != "$MY_LABEL" ]; then
+for i in "${!IPS[@]}"; do
+    if [ "$i" -ne "$MY_INDEX" ]; then
+        label="${LABELS[$i]}"
+        ip="${IPS[$i]}"
         HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
             -X POST http://localhost:8080/admin/peers/register \
             -H "Content-Type: application/json" \
@@ -178,7 +186,7 @@ for label in A B C D; do
         if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
             success "Registered peer laptop-$label ($ip)"
         else
-            warn "Could not register laptop-$label yet (HTTP $HTTP) — peer may still be starting. Retry with: ./register_peers.sh"
+            warn "Could not register laptop-$label (HTTP $HTTP) — retry with: ./register_peers.sh"
         fi
     fi
 done
@@ -187,14 +195,11 @@ done
 echo ""
 info "Triggering conflict-service catch-up sync from peers..."
 sleep 2
-for label in A B C D; do
-    case "$label" in
-        A) ip="$IP_A" ;;
-        B) ip="$IP_B" ;;
-        C) ip="$IP_C" ;;
-        D) ip="$IP_D" ;;
-    esac
-    if [ "$label" != "$MY_LABEL" ]; then
+for i in "${!IPS[@]}"; do
+    if [ "$i" -ne "$MY_INDEX" ]; then
+        label="${LABELS[$i]}"
+        ip="${IPS[$i]}"
+
         HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
             -X POST http://localhost:8003/internal/peers/register \
             -H "Content-Type: application/json" \
@@ -206,7 +211,6 @@ for label in A B C D; do
             warn "Conflict sync to laptop-$label returned HTTP $HTTP — may still be starting"
         fi
 
-        # Trigger journey catch-up sync
         HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
             -X POST http://localhost:8080/internal/journeys/peers/register \
             -H "Content-Type: application/json" \
@@ -223,7 +227,7 @@ done
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
 echo "============================================="
-echo -e " ${GREEN}Setup complete — Laptop $MY_LABEL${NC}"
+echo -e " ${GREEN}Setup complete — Laptop $MY_LABEL ($N nodes)${NC}"
 echo "============================================="
 echo ""
 echo "  Frontend:    http://localhost:3000"
@@ -231,22 +235,18 @@ echo "  API Gateway: http://localhost:8080"
 echo "  Health:      http://localhost:8080/health"
 echo "  RabbitMQ UI: http://localhost:15672  (journey_admin / journey_pass)"
 echo ""
-echo "  Peer IPs:"
-for label in A B C D; do
-    case "$label" in
-        A) ip="$IP_A" ;;
-        B) ip="$IP_B" ;;
-        C) ip="$IP_C" ;;
-        D) ip="$IP_D" ;;
-    esac
-    if [ "$label" = "$MY_LABEL" ]; then
+echo "  All nodes:"
+for i in "${!IPS[@]}"; do
+    label="${LABELS[$i]}"
+    ip="${IPS[$i]}"
+    if [ "$i" -eq "$MY_INDEX" ]; then
         echo "    Laptop $label: $ip  ← YOU"
     else
         echo "    Laptop $label: $ip"
     fi
 done
 echo ""
-echo "  Demo kill commands (see demo_cheatsheet.sh for full list):"
+echo "  Demo kill commands:"
 echo "    Soft kill (all routes 503, browser fails over):"
 echo "      curl -X POST http://localhost:8080/admin/simulate/fail"
 echo "    Recover:"

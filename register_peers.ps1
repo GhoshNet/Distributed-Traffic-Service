@@ -1,6 +1,5 @@
 # register_peers.ps1 — Re-register all peers without redeploying (Windows)
-# Run if setup_demo.ps1 peer registration failed.
-# Reads .env written by setup_demo.ps1
+# Run if setup_demo.ps1 peer registration failed. Reads .env written by setup_demo.ps1.
 
 function Success($msg) { Write-Host "[OK] $msg"   -ForegroundColor Green }
 function Warn($msg)    { Write-Host "[WARN] $msg" -ForegroundColor Yellow }
@@ -13,32 +12,47 @@ $env_vars = @{}
 Get-Content .env | ForEach-Object {
     if ($_ -match "^([^=]+)=(.*)$") { $env_vars[$matches[1]] = $matches[2] }
 }
-$MyLabel = $env_vars["MY_LABEL"]
-$IpMap = @{ A=$env_vars["IP_A"]; B=$env_vars["IP_B"]; C=$env_vars["IP_C"]; D=$env_vars["IP_D"] }
+
+$MyLabel   = $env_vars["MY_LABEL"]
+$NodeCount = [int]$env_vars["NODE_COUNT"]
+$AllLabels = @('A','B','C','D','E','F','G','H','I','J')
+
+# Rebuild IP list from .env
+$IpList = @()
+for ($i = 0; $i -lt $NodeCount; $i++) {
+    $IpList += $env_vars["IP_$($AllLabels[$i])"]
+}
+
+$MyIndex = $AllLabels.IndexOf($MyLabel)
 
 Write-Host ""
-Info "Registering peers for Laptop $MyLabel..."
+Info "Registering peers for Laptop $MyLabel ($NodeCount nodes total)..."
 Write-Host ""
 
-foreach ($key in $IpMap.Keys) {
-    if ($key -ne $MyLabel) {
-        $ip = $IpMap[$key]
+for ($i = 0; $i -lt $NodeCount; $i++) {
+    if ($i -ne $MyIndex) {
+        $lbl = $AllLabels[$i]; $ip = $IpList[$i]
 
-        # Health peer
         try {
-            $body = '{"name": "laptop-' + $key + '", "health_url": "http://' + $ip + ':8080/health"}'
+            $body = '{"name": "laptop-' + $lbl + '", "health_url": "http://' + $ip + ':8080/health"}'
             $r = Invoke-WebRequest -Uri "http://localhost:8080/admin/peers/register" `
                 -Method POST -Body $body -ContentType "application/json" -UseBasicParsing -TimeoutSec 5
-            if ($r.StatusCode -in 200,201) { Success "Health peer laptop-$key ($ip) registered" }
-        } catch { Warn "Health peer laptop-$key`: not reachable (HTTP error)" }
+            if ($r.StatusCode -in 200,201) { Success "Health peer laptop-$lbl ($ip) registered" }
+        } catch { Warn "Health peer laptop-$lbl`: not reachable" }
 
-        # Conflict sync
         try {
             $body = '{"peer_url": "http://' + $ip + ':8003"}'
             $r = Invoke-WebRequest -Uri "http://localhost:8003/internal/peers/register" `
                 -Method POST -Body $body -ContentType "application/json" -UseBasicParsing -TimeoutSec 5
-            if ($r.StatusCode -in 200,204) { Success "Conflict peer laptop-$key ($ip:8003) + catch-up triggered" }
-        } catch { Warn "Conflict peer laptop-$key`: not reachable" }
+            if ($r.StatusCode -in 200,204) { Success "Conflict peer laptop-$lbl ($ip:8003) registered + catch-up triggered" }
+        } catch { Warn "Conflict peer laptop-$lbl`: not reachable" }
+
+        try {
+            $body = '{"peer_url": "http://' + $ip + ':8080"}'
+            $r = Invoke-WebRequest -Uri "http://localhost:8080/internal/journeys/peers/register" `
+                -Method POST -Body $body -ContentType "application/json" -UseBasicParsing -TimeoutSec 5
+            if ($r.StatusCode -in 200,201) { Success "Journey peer laptop-$lbl ($ip:8080) registered + catch-up triggered" }
+        } catch { Warn "Journey peer laptop-$lbl`: not reachable" }
     }
 }
 

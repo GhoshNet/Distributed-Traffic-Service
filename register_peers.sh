@@ -1,10 +1,9 @@
 #!/bin/bash
 # register_peers.sh — Re-register all peers without redeploying
-# Run this if setup_demo.sh peer registration failed (peers not up yet)
-# Also safe to run multiple times.
+# Run this if setup_demo.sh peer registration failed (peers not up yet).
+# Safe to run multiple times. Reads .env written by setup_demo.sh.
 #
 # Usage: ./register_peers.sh
-# (reads .env written by setup_demo.sh)
 
 set -e
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
@@ -15,19 +14,33 @@ warn()    { echo -e "${YELLOW}[WARN]${NC} $*"; }
 [ -f .env ] || { echo "Run setup_demo.sh first — .env not found"; exit 1; }
 source .env
 
+LABELS=(A B C D E F G H I J)
+
+# Rebuild IPs array from .env (IP_A, IP_B, ...)
+IPS=()
+for lbl in "${LABELS[@]}"; do
+    var="IP_${lbl}"
+    val="${!var}"
+    [ -n "$val" ] && IPS+=("$val") || break
+done
+
+N=${#IPS[@]}
+
+# Find my index
+MY_INDEX=-1
+for i in "${!LABELS[@]}"; do
+    [ "${LABELS[$i]}" = "$MY_LABEL" ] && MY_INDEX=$i && break
+done
+
 echo ""
-echo "Registering peers for Laptop $MY_LABEL..."
+info "Registering peers for Laptop $MY_LABEL ($N nodes total)..."
 echo ""
 
-for label in A B C D; do
-    case "$label" in
-        A) ip="$IP_A" ;;
-        B) ip="$IP_B" ;;
-        C) ip="$IP_C" ;;
-        D) ip="$IP_D" ;;
-    esac
-    if [ "$label" != "$MY_LABEL" ]; then
-        # Register health peer (journey-service peer monitor)
+for i in "${!IPS[@]}"; do
+    if [ "$i" -ne "$MY_INDEX" ]; then
+        label="${LABELS[$i]}"
+        ip="${IPS[$i]}"
+
         HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
             -X POST http://localhost:8080/admin/peers/register \
             -H "Content-Type: application/json" \
@@ -37,7 +50,6 @@ for label in A B C D; do
             && success "Health peer laptop-$label ($ip) registered" \
             || warn    "Health peer laptop-$label: HTTP $HTTP (is it up?)"
 
-        # Register conflict-service replication peer + trigger catch-up sync
         HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
             -X POST http://localhost:8003/internal/peers/register \
             -H "Content-Type: application/json" \
@@ -47,7 +59,6 @@ for label in A B C D; do
             && success "Conflict peer laptop-$label ($ip:8003) registered + catch-up triggered" \
             || warn    "Conflict peer laptop-$label: HTTP $HTTP (is it up?)"
 
-        # Register journey-service replication peer + trigger catch-up sync
         HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
             -X POST http://localhost:8080/internal/journeys/peers/register \
             -H "Content-Type: application/json" \
@@ -57,7 +68,6 @@ for label in A B C D; do
             && success "Journey peer laptop-$label ($ip:8080) registered + catch-up triggered" \
             || warn    "Journey peer laptop-$label: HTTP $HTTP (is it up?)"
 
-        # Register user-service replication peer + trigger catch-up sync
         HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
             -X POST http://localhost:8080/internal/peers/register \
             -H "Content-Type: application/json" \
