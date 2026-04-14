@@ -454,7 +454,7 @@ services:
     ports:
     - 8003:8000
     environment:
-      DATABASE_URL: postgresql+asyncpg://conflicts_user:conflicts_pass@postgres-conflicts:5432/conflicts_db
+      DATABASE_URL: postgres://conflicts_user:conflicts_pass@postgres-conflicts:5432/conflicts_db
       REDIS_URL: redis://redis:6379/2
       RABBITMQ_URL: amqp://journey_admin:journey_pass@rabbitmq:5672/journey_vhost
       JWT_SECRET: keefkfwjNBEFINoodwoedibIOEJFKWNFIjjjdIIIOOP
@@ -538,8 +538,8 @@ services:
     ports:
     - 8006:8000
     environment:
-      DATABASE_URL: postgresql+asyncpg://analytics_user:analytics_pass@postgres-analytics:5432/analytics_db
-      DATABASE_READ_URL: postgresql+asyncpg://analytics_user:analytics_pass@postgres-analytics-replica:5432/analytics_db
+      DATABASE_URL: postgres://analytics_user:analytics_pass@postgres-analytics:5432/analytics_db
+      DATABASE_READ_URL: postgres://analytics_user:analytics_pass@postgres-analytics-replica:5432/analytics_db
       REDIS_URL: redis://redis:6379/5
       RABBITMQ_URL: amqp://journey_admin:journey_pass@rabbitmq:5672/journey_vhost
       JWT_SECRET: keefkfwjNBEFINoodwoedibIOEJFKWNFIjjjdIIIOOP
