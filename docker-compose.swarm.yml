@@ -50,6 +50,7 @@ services:
       replicas: 2
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
+    hostname: rabbitmq
     ports:
     - 5672:5672
     - 15672:15672
@@ -58,6 +59,7 @@ services:
       RABBITMQ_DEFAULT_USER: journey_admin
       RABBITMQ_DEFAULT_PASS: journey_pass
       RABBITMQ_DEFAULT_VHOST: journey_vhost
+      RABBITMQ_NODENAME: rabbit@rabbitmq
     volumes:
     - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
@@ -74,6 +76,7 @@ services:
     - journey-net
   rabbitmq-2:
     image: rabbitmq:3.13-management-alpine
+    hostname: rabbitmq-2
     environment:
       RABBITMQ_ERLANG_COOKIE: journey_cluster_cookie
       RABBITMQ_DEFAULT_USER: journey_admin
@@ -103,6 +106,7 @@ services:
     - journey-net
   rabbitmq-3:
     image: rabbitmq:3.13-management-alpine
+    hostname: rabbitmq-3
     environment:
       RABBITMQ_ERLANG_COOKIE: journey_cluster_cookie
       RABBITMQ_DEFAULT_USER: journey_admin
@@ -167,12 +171,7 @@ services:
     - journey-net
   redis-sentinel:
     image: redis:7-alpine
-    command: 'sh -c " cat > /tmp/sentinel.conf <<EOF sentinel monitor mymaster redis
-      6379 2 sentinel down-after-milliseconds mymaster 5000 sentinel failover-timeout
-      mymaster 10000 sentinel parallel-syncs mymaster 1 EOF redis-sentinel /tmp/sentinel.conf
-      "
-
-      '
+    command: "sh -c \"until REDIS_IP=$$(getent hosts redis | awk '{print $$1}') && [ -n \\\"$$REDIS_IP\\\" ]; do sleep 2; done && echo \\\"sentinel monitor mymaster $$REDIS_IP 6379 2\\\" > /tmp/sentinel.conf && echo 'sentinel down-after-milliseconds mymaster 5000' >> /tmp/sentinel.conf && echo 'sentinel failover-timeout mymaster 10000' >> /tmp/sentinel.conf && echo 'sentinel parallel-syncs mymaster 1' >> /tmp/sentinel.conf && redis-sentinel /tmp/sentinel.conf\""
     ports:
     - 26379:26379
     depends_on:
@@ -183,12 +182,7 @@ services:
     - journey-net
   redis-sentinel-2:
     image: redis:7-alpine
-    command: 'sh -c " cat > /tmp/sentinel.conf <<EOF sentinel monitor mymaster redis
-      6379 2 sentinel down-after-milliseconds mymaster 5000 sentinel failover-timeout
-      mymaster 10000 sentinel parallel-syncs mymaster 1 EOF redis-sentinel /tmp/sentinel.conf
-      "
-
-      '
+    command: "sh -c \"until REDIS_IP=$$(getent hosts redis | awk '{print $$1}') && [ -n \\\"$$REDIS_IP\\\" ]; do sleep 2; done && echo \\\"sentinel monitor mymaster $$REDIS_IP 6379 2\\\" > /tmp/sentinel.conf && echo 'sentinel down-after-milliseconds mymaster 5000' >> /tmp/sentinel.conf && echo 'sentinel failover-timeout mymaster 10000' >> /tmp/sentinel.conf && echo 'sentinel parallel-syncs mymaster 1' >> /tmp/sentinel.conf && redis-sentinel /tmp/sentinel.conf\""
     depends_on:
     - redis
     - redis-replica
@@ -197,12 +191,7 @@ services:
     - journey-net
   redis-sentinel-3:
     image: redis:7-alpine
-    command: 'sh -c " cat > /tmp/sentinel.conf <<EOF sentinel monitor mymaster redis
-      6379 2 sentinel down-after-milliseconds mymaster 5000 sentinel failover-timeout
-      mymaster 10000 sentinel parallel-syncs mymaster 1 EOF redis-sentinel /tmp/sentinel.conf
-      "
-
-      '
+    command: "sh -c \"until REDIS_IP=$$(getent hosts redis | awk '{print $$1}') && [ -n \\\"$$REDIS_IP\\\" ]; do sleep 2; done && echo \\\"sentinel monitor mymaster $$REDIS_IP 6379 2\\\" > /tmp/sentinel.conf && echo 'sentinel down-after-milliseconds mymaster 5000' >> /tmp/sentinel.conf && echo 'sentinel failover-timeout mymaster 10000' >> /tmp/sentinel.conf && echo 'sentinel parallel-syncs mymaster 1' >> /tmp/sentinel.conf && redis-sentinel /tmp/sentinel.conf\""
     depends_on:
     - redis
     - redis-replica
@@ -210,7 +199,7 @@ services:
     networks:
     - journey-net
   postgres-users:
-    image: postgres:16-alpine
+    image: 127.0.0.1:5000/postgres-custom:latest
     environment:
       POSTGRES_DB: users_db
       POSTGRES_USER: users_user
@@ -241,8 +230,7 @@ services:
     entrypoint: "bash -c \"\nif [ ! -f /var/lib/postgresql/data/PG_VERSION ]; then\n\
       \  echo 'Initializing replica from primary...'\n  until pg_isready -h postgres-users\
       \ -U users_user -d users_db; do sleep 2; done\n  pg_basebackup -h postgres-users\
-      \ -U users_user -D /var/lib/postgresql/data -Fp -Xs -P -R\nfi\nexec postgres\
-      \ -c hot_standby=on\n\"\n"
+      \ -U users_user -D /var/lib/postgresql/data -Fp -Xs -P -R\nfi\nchown -R postgres:postgres /var/lib/postgresql/data\nchmod 0700 /var/lib/postgresql/data\nexec su-exec postgres postgres -c hot_standby=on\n\"\n"
     depends_on:
     - postgres-users
     healthcheck:
@@ -257,7 +245,7 @@ services:
     networks:
     - journey-net
   postgres-journeys:
-    image: postgres:16-alpine
+    image: 127.0.0.1:5000/postgres-custom:latest
     environment:
       POSTGRES_DB: journeys_db
       POSTGRES_USER: journeys_user
@@ -288,8 +276,7 @@ services:
     entrypoint: "bash -c \"\nif [ ! -f /var/lib/postgresql/data/PG_VERSION ]; then\n\
       \  echo 'Initializing replica from primary...'\n  until pg_isready -h postgres-journeys\
       \ -U journeys_user -d journeys_db; do sleep 2; done\n  pg_basebackup -h postgres-journeys\
-      \ -U journeys_user -D /var/lib/postgresql/data -Fp -Xs -P -R\nfi\nexec postgres\
-      \ -c hot_standby=on\n\"\n"
+      \ -U journeys_user -D /var/lib/postgresql/data -Fp -Xs -P -R\nfi\nchown -R postgres:postgres /var/lib/postgresql/data\nchmod 0700 /var/lib/postgresql/data\nexec su-exec postgres postgres -c hot_standby=on\n\"\n"
     depends_on:
     - postgres-journeys
     healthcheck:
@@ -304,7 +291,7 @@ services:
     networks:
     - journey-net
   postgres-conflicts:
-    image: postgres:16-alpine
+    image: 127.0.0.1:5000/postgres-custom:latest
     environment:
       POSTGRES_DB: conflicts_db
       POSTGRES_USER: conflicts_user
@@ -335,8 +322,7 @@ services:
     entrypoint: "bash -c \"\nif [ ! -f /var/lib/postgresql/data/PG_VERSION ]; then\n\
       \  echo 'Initializing replica from primary...'\n  until pg_isready -h postgres-conflicts\
       \ -U conflicts_user -d conflicts_db; do sleep 2; done\n  pg_basebackup -h postgres-conflicts\
-      \ -U conflicts_user -D /var/lib/postgresql/data -Fp -Xs -P -R\nfi\nexec postgres\
-      \ -c hot_standby=on\n\"\n"
+      \ -U conflicts_user -D /var/lib/postgresql/data -Fp -Xs -P -R\nfi\nchown -R postgres:postgres /var/lib/postgresql/data\nchmod 0700 /var/lib/postgresql/data\nexec su-exec postgres postgres -c hot_standby=on\n\"\n"
     depends_on:
     - postgres-conflicts
     healthcheck:
@@ -351,7 +337,7 @@ services:
     networks:
     - journey-net
   postgres-analytics:
-    image: postgres:16-alpine
+    image: 127.0.0.1:5000/postgres-custom:latest
     environment:
       POSTGRES_DB: analytics_db
       POSTGRES_USER: analytics_user
@@ -382,8 +368,7 @@ services:
     entrypoint: "bash -c \"\nif [ ! -f /var/lib/postgresql/data/PG_VERSION ]; then\n\
       \  echo 'Initializing replica from primary...'\n  until pg_isready -h postgres-analytics\
       \ -U analytics_user -d analytics_db; do sleep 2; done\n  pg_basebackup -h postgres-analytics\
-      \ -U analytics_user -D /var/lib/postgresql/data -Fp -Xs -P -R\nfi\nexec postgres\
-      \ -c hot_standby=on\n\"\n"
+      \ -U analytics_user -D /var/lib/postgresql/data -Fp -Xs -P -R\nfi\nchown -R postgres:postgres /var/lib/postgresql/data\nchmod 0700 /var/lib/postgresql/data\nexec su-exec postgres postgres -c hot_standby=on\n\"\n"
     depends_on:
     - postgres-analytics
     healthcheck:

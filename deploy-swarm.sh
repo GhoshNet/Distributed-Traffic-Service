@@ -22,11 +22,17 @@ for service in "${SERVICES[@]}"; do
     docker build -t 127.0.0.1:5000/$service:latest -f $service/Dockerfile .
 done
 
+echo "  > Building postgres-custom (with replication init)..."
+docker build -t 127.0.0.1:5000/postgres-custom:latest -f postgres-custom/Dockerfile postgres-custom/
+
 echo "[3/4] Pushing images to local Swarm registry..."
 for service in "${SERVICES[@]}"; do
     echo "  > Pushing $service..."
     docker push 127.0.0.1:5000/$service:latest
 done
+
+echo "  > Pushing postgres-custom..."
+docker push 127.0.0.1:5000/postgres-custom:latest
 
 echo "[4/4] Deploying stack via docker-compose.swarm.yml..."
 docker stack deploy -c docker-compose.swarm.yml traffic-service
