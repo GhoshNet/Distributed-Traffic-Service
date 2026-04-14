@@ -98,12 +98,13 @@ class BookingSaga:
         return result
 
     @staticmethod
-    def build_event_payload(journey: Journey, event_type: EventType) -> dict:
+    def build_event_payload(journey: Journey, event_type: EventType, user_name: str = "") -> dict:
         """Build the event payload dict for a journey event."""
         return {
             "event_type": event_type.value,
             "journey_id": journey.id,
             "user_id": journey.user_id,
+            "user_name": user_name,
             "origin": journey.origin,
             "destination": journey.destination,
             "origin_lat": journey.origin_lat,
@@ -119,7 +120,7 @@ class BookingSaga:
         }
 
     @staticmethod
-    async def save_outbox_event(db, journey: Journey, event_type: EventType):
+    async def save_outbox_event(db, journey: Journey, event_type: EventType, user_name: str = ""):
         """
         Write an event to the outbox table within the current DB transaction.
         A background publisher will drain unpublished events to RabbitMQ,
@@ -129,7 +130,7 @@ class BookingSaga:
         import uuid
         from .database import OutboxEvent
 
-        payload = BookingSaga.build_event_payload(journey, event_type)
+        payload = BookingSaga.build_event_payload(journey, event_type, user_name=user_name)
 
         def json_serializer(obj):
             if isinstance(obj, datetime):

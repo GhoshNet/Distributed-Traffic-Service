@@ -73,7 +73,7 @@ class TwoPhaseCoordinator:
 
     @staticmethod
     async def execute(
-        journey: Journey, db
+        journey: Journey, db, user_name: str = ""
     ) -> tuple[JourneyStatus, Optional[str]]:
         """
         Execute the 2PC protocol for a journey.
@@ -113,6 +113,7 @@ class TwoPhaseCoordinator:
                 "event_type": EventType.JOURNEY_CONFIRMED.value,
                 "journey_id": journey.id,
                 "user_id": journey.user_id,
+                "user_name": user_name,
                 "origin": journey.origin,
                 "destination": journey.destination,
                 "origin_lat": journey.origin_lat,

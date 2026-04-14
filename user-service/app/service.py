@@ -102,6 +102,7 @@ class UserService:
             email=user.email,
             license_number=user.license_number,
             role=user.role,
+            full_name=user.full_name,
         )
 
         logger.info(f"User logged in: {user.id}")

@@ -54,7 +54,8 @@ async def create_journey(
     _check_node_not_failed()
     try:
         return await JourneyService.create_journey(
-            db, current_user["user_id"], request, use_2pc=(mode == "2pc")
+            db, current_user["user_id"], request, use_2pc=(mode == "2pc"),
+            user_name=current_user.get("full_name", ""),
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

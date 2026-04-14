@@ -199,9 +199,15 @@ function handleLiveEvent(data) {
     // Show toast
     const toast = document.createElement('div');
     toast.className = 'event-toast';
-    toast.innerHTML = `<strong>${data.title}</strong><div style="font-size:12px;opacity:0.8;margin-top:4px">${data.message}</div>`;
+    const ts = data.timestamp ? new Date(data.timestamp).toLocaleTimeString() : '';
+    toast.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+            <strong style="font-size:14px">${data.title}</strong>
+            ${ts ? `<span style="font-size:10px;opacity:0.6;white-space:nowrap">${ts}</span>` : ''}
+        </div>
+        <div style="font-size:12px;opacity:0.85;margin-top:5px;line-height:1.4">${data.message}</div>`;
     document.body.appendChild(toast);
-    setTimeout(()=> toast.remove(), 5000);
+    setTimeout(()=> toast.remove(), 9000);
 
     // If journey confirmed, add a line to map
     if(data.event_type === "journey.confirmed" && data.metadata) {
@@ -539,7 +545,15 @@ async function loadVehicles() {
 
 function showAddVehicle() {
     const form = document.getElementById('add-vehicle-form');
-    form.style.display = form.style.display === 'none' ? 'block' : 'none';
+    const isShowing = form.style.display !== 'block';
+    form.style.display = isShowing ? 'block' : 'none';
+    // Pre-fill the plate field with the user's license number on first open
+    if (isShowing) {
+        const plateInput = document.getElementById('v-plate');
+        if (plateInput && !plateInput.value && user && user.license_number) {
+            plateInput.value = user.license_number;
+        }
+    }
 }
 
 async function addVehicle() {
@@ -1123,5 +1137,5 @@ function showToast(message, type = "info") {
             el.style.transform = 'translateX(50px)';
             setTimeout(() => el.remove(), 300);
         }
-    }, 4000);
+    }, 7000);
 }

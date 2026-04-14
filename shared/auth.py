@@ -24,7 +24,7 @@ if JWT_SECRET == _DEFAULT_SECRET:
 security = HTTPBearer()
 
 
-def create_access_token(user_id: str, email: str, license_number: str, role: str = "DRIVER") -> tuple[str, int]:
+def create_access_token(user_id: str, email: str, license_number: str, role: str = "DRIVER", full_name: str = "") -> tuple[str, int]:
     """Create a JWT access token. Returns (token, expires_in_seconds)."""
     expires_delta = timedelta(hours=JWT_EXPIRATION_HOURS)
     expire = datetime.utcnow() + expires_delta
@@ -34,6 +34,7 @@ def create_access_token(user_id: str, email: str, license_number: str, role: str
         "email": email,
         "license": license_number,
         "role": role,
+        "full_name": full_name,
         "exp": expire,
         "iat": datetime.utcnow(),
     }
@@ -63,6 +64,7 @@ async def get_current_user(
         "email": payload["email"],
         "license": payload.get("license"),
         "role": payload.get("role", "DRIVER"),
+        "full_name": payload.get("full_name", ""),
     }
 
 

@@ -35,6 +35,7 @@ class JourneyService:
     async def create_journey(
         db: AsyncSession, user_id: str, request: JourneyCreateRequest,
         use_2pc: bool = False,
+        user_name: str = "",
     ) -> JourneyResponse:
         """Create a new journey booking (triggers the booking saga)."""
 
@@ -97,7 +98,7 @@ class JourneyService:
 
         # Execute the booking saga OR Two-Phase Commit coordinator
         if use_2pc:
-            final_status, rejection_reason = await TwoPhaseCoordinator.execute(journey, db)
+            final_status, rejection_reason = await TwoPhaseCoordinator.execute(journey, db, user_name=user_name)
         else:
             final_status, rejection_reason = await BookingSaga.execute(journey)
 
@@ -112,7 +113,7 @@ class JourneyService:
         # never lost even if RabbitMQ is temporarily unavailable.
         journey.status = final_status.value
         journey.rejection_reason = rejection_reason
-        await BookingSaga.save_outbox_event(db, journey, event_type)
+        await BookingSaga.save_outbox_event(db, journey, event_type, user_name=user_name)
         await db.commit()
         await db.refresh(journey)
 
