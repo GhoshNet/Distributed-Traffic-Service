@@ -445,3 +445,308 @@ For a demo, this complexity is not worth it. The single-VM deployment demonstrat
 ---
 
 *Document prepared for internal reference — Group J, CS7NS6 Distributed Systems, TCD 2025-2026.*
+
+---
+
+---
+
+# Section 10 — Complete Design Walkthrough: How and Why the System Works
+
+*Added April 2026 — full rationale for every distributed systems choice, with alternatives considered.*
+
+---
+
+## 10.1 The Problem and What Makes It Hard
+
+The system books road journeys for drivers nationally. At 1M drivers with 30% booking during a 30-minute morning peak, that is approximately **167 bookings/second**. Three things make this genuinely hard:
+
+1. **Conflict correctness** — two drivers cannot be booked on the same road segment at the same time. If two requests arrive at the same millisecond, exactly one must win. No exceptions.
+2. **High availability** — if a node crashes mid-morning rush, the system must not go down. Enforcement agents on the roadside need answers in <200ms.
+3. **Consistency under failure** — when a node dies and comes back, it must not have a stale view of bookings. A booking confirmed before the crash must still be there after recovery.
+
+Every design choice flows from these three tensions.
+
+---
+
+## 10.2 Overall Architecture: Why Microservices?
+
+Six independent microservices, each with its own database.
+
+**Alternative considered:** A monolith — one service, one database.
+
+**Why not:** A monolith cannot be scaled independently. The conflict check is the hottest path (every booking hits it). You need to scale that independently from analytics. More importantly, a monolith means one database, which means one lock scope for everything — serializing registration checks alongside booking checks alongside analytics writes. That would crater performance at 167 bookings/s.
+
+**Why microservices work here:** Each service owns exactly its data. Journey-service is the only writer to `journeys_db`. Conflict-service is the only writer to `conflicts_db`. This means the `SERIALIZABLE` transaction in conflict-service never contends with a user registration. Services communicate synchronously (REST, on the critical path) or asynchronously (RabbitMQ, off the critical path).
+
+**The synchronous vs asynchronous split is the most important architectural decision:**
+
+- **Synchronous (REST):** Journey → Conflict (the booking check). Must be synchronous because the user is waiting for a CONFIRMED/REJECTED response. Cannot defer this.
+- **Asynchronous (RabbitMQ):** Everything else — notifications, enforcement cache updates, analytics. These can lag by seconds without affecting correctness.
+
+**Alternative for async:** Direct HTTP calls from journey-service to notification-service. If notification-service is down, the booking would fail. That is unacceptable — a notification is not required for a booking to be valid. RabbitMQ decouples them: booking confirms, event goes in outbox, notification eventually delivers.
+
+---
+
+## 10.3 The Booking Path End to End
+
+### Gateway and Rate Limiting
+
+HAProxy (full-stack) or nginx (slim) receives the POST to `/api/journeys/`. Rate limiting: max 10 bookings/second per client, burst 20. First line of defence against flooding.
+
+**Why HAProxy in front of nginx?** HAProxy does TCP-level load balancing across two nginx instances. Nginx does HTTP-level routing by URL prefix (`/api/journeys/ → journey-service:8002`). Separating them lets each layer scale independently and gives two levels of fault tolerance at the entry layer.
+
+**Alternative:** A single nginx. Simpler, but one nginx becomes a single point of failure at the entry layer.
+
+### Idempotency Check
+
+Before doing anything, journey-service checks if this `Idempotency-Key` has been seen before (table `idempotency_records`). If yes, return the cached result immediately.
+
+**Why:** Networks are unreliable. If the connection drops after the server confirmed the booking but before the browser received the response, the user will retry. Without idempotency, you book twice. With it, the second request returns the original result with no side effects.
+
+**Alternative:** No idempotency — let the user retry and detect the duplicate in the conflict check. Works, but wastes a full conflict-check round-trip and complicates client-side error handling.
+
+### Journey Row Created as PENDING
+
+A `Journey` row is written to `journeys_db` with `status=PENDING` **before** the conflict check.
+
+**Why:** You need a record of the attempt regardless of outcome. If the service crashes after creating the row but before the conflict check, the outbox pattern needs something to attach to. A PENDING row also lets the lifecycle scheduler clean up stuck bookings.
+
+### Booking Saga
+
+Journey-service calls `conflict_client.py → resilient_conflict_check()`. This is the saga's key step.
+
+**What is a Saga?** A sequence of local transactions coordinated by calls/messages, where each step has a compensating action on failure. Here: step 1 = create PENDING journey (compensating = mark REJECTED), step 2 = check conflict (compensating = nothing, slot is only reserved on success), step 3 = mark CONFIRMED/REJECTED.
+
+**Alternative: Two-Phase Commit (2PC).** Also implemented (`?mode=2pc`). The difference:
+
+| | Saga | 2PC |
+|---|---|---|
+| When slot reserved | On successful conflict check (atomic with commit) | During PREPARE, before journey row is committed |
+| If journey commit crashes after PREPARE | Slot exists but no journey row — capacity leak | Coordinator explicitly calls CANCEL to release slot |
+| Consistency guarantee | Near-atomic (brief window possible) | Fully atomic — either both commit or both roll back |
+| Availability | Higher — saga proceeds independently | Lower — both services must be available for PREPARE |
+
+**Why saga as default?** The PREPARE window in 2PC holds a slot locked but uncommitted, blocking other bookings during that window. Under high load (167 bookings/s), this accumulates latency. The saga avoids this by reserving only on a confirmed commit. 2PC is offered as a demonstration of the stronger guarantee.
+
+### Conflict Check: SERIALIZABLE + SELECT FOR UPDATE
+
+The entire check-and-reserve runs in one `SERIALIZABLE` transaction with `SELECT FOR UPDATE` (`service.go:67`):
+
+1. Check driver time overlap — does this user already have an active journey overlapping this window?
+2. Check vehicle overlap — is this vehicle already booked for an overlapping window?
+3. Check road capacity — for every ~1km grid cell along the route, is `current_bookings >= max_capacity` for the 30-minute time slot?
+4. If all pass → `INSERT INTO booked_slots` + increment `road_segment_capacity` for every cell.
+5. `COMMIT`.
+
+**Why SERIALIZABLE isolation?** Default PostgreSQL isolation is `READ COMMITTED`. Under `READ COMMITTED`, two concurrent transactions can both read `current_bookings = 0`, both decide "space available", both insert — double-booking. `SERIALIZABLE` detects this and forces one to retry or fail. Combined with `SELECT FOR UPDATE`, which locks the specific rows, it is impossible to double-book even under extreme concurrency.
+
+**Alternative: application-level locking (Redis `SETNX` on the slot key).** Adds a Redis network round-trip and a single point of failure. Database-level locking is simpler, more reliable, and keeps lock scope exactly as tight as the data.
+
+**Why Go for conflict-service?** The conflict check is both CPU-bound (grid cell calculation, path interpolation) and I/O-bound (many `SELECT FOR UPDATE` queries). Go's goroutine model handles high concurrency with very low memory overhead compared to Python threads. Each conflict check is a goroutine — thousands can run concurrently.
+
+### Grid-Cell Road Model
+
+Ireland is divided into a ~1km grid (`gridResolution = 0.01°`). A booking walks every ~1km cell along the route and locks each one for the 30-minute time slot during which the vehicle will be in that cell.
+
+**Why grid cells and not named road segments?** Named segments require a road network database — millions of records for national coverage. A coordinate grid is computed on the fly from any origin/destination pair with no external data. The trade-off is occasional false positives for routes that are geographically close but physically separate. Predefined `route_id` waypoints mitigate this for the demo routes.
+
+**Why 30-minute time slots?** A vehicle at 100km/h traverses ~50km in 30 minutes, but each cell is 1km. The slot is deliberately coarser than vehicle speed so that a booking "holds" a cell for the whole slot, preventing near-misses from slightly different departure times. Per-minute slots would require 30× more rows and 30× more writes per booking — not feasible at 167 bookings/s.
+
+### Transactional Outbox Pattern
+
+After the conflict check, journey-service writes two things in a single database transaction:
+- Updated journey row (`status = CONFIRMED` or `REJECTED`)
+- An outbox event row (`routing_key = journey.confirmed`, `published = false`)
+
+A background poller drains unpublished events to RabbitMQ every 2 seconds.
+
+**Why the outbox pattern?** The dual-write problem: if you write to the DB then publish to RabbitMQ separately, a crash between those two leaves them inconsistent — booking confirmed but no notification sent, or (worse) notification sent before the commit. The outbox pattern eliminates this: the event is part of the same atomic transaction as the domain write.
+
+**At-least-once + idempotent consumer = effectively exactly-once:** The drainer can deliver a message more than once (publish, crash before marking published). Downstream consumers use Redis `SETNX` on message ID (24-hour TTL) to deduplicate. This is the standard industry pattern.
+
+**Alternative:** Publish directly to RabbitMQ in the request handler. Simple, but RabbitMQ outages would cause booking failures. The outbox separates booking correctness from notification delivery.
+
+---
+
+## 10.4 Multi-Node: Replication, Consistency, Failover
+
+### Node Model: Active-Active
+
+Each laptop runs the complete stack. Both nodes accept writes. Both hold all data.
+
+**Alternative: active-passive (primary-standby).** The standby only takes over when primary dies. During failover there is a gap while the passive warms up. Active-active means the peer is always ready and already has current data.
+
+**Alternative: geographic sharding** (Node A = Dublin, Node B = Cork). Node A's outage takes Dublin bookings offline — violates the availability requirement.
+
+### Conflict-Service Slot Replication: Deliberate Eventual Consistency
+
+After every successful commit, `replicateSlotToPeers()` fires as a goroutine — it does not block the booking response. It sends `POST /internal/slots/replicate` to every peer.
+
+This is **deliberate eventual consistency.** Node A commits → returns CONFIRMED → goroutine sends slot to Node B. During the time between commit and Node B receiving the slot (~200ms on LAN), Node B could accept a conflicting booking.
+
+**Why accept this?** Synchronous cross-node replication would add one full network round-trip to every booking. At 167 bookings/s, that adds significant latency. More critically, it makes Node A's availability dependent on Node B — if Node B is slow, every booking on Node A is slow. The probability of a genuine race in a <200ms window is extremely low on a LAN. For a production system you would use Raft/Paxos; for a demo the trade-off is documented and acceptable.
+
+**Three replication mechanisms working together:**
+
+1. **Forward push (real-time, async):** `replicateSlotToPeers()` after every commit. Covers the normal case.
+2. **Catch-up sync on join:** When a node registers a peer, it immediately pulls all active slots via `GET /internal/slots/active`. Covers "Node B just started" or "Node B missed bookings during downtime".
+3. **Periodic 5-minute re-sync:** `startPeriodicSync()`. Safety net for any slots missed during a brief replication failure.
+
+All three are idempotent — applying the same slot twice is a no-op (keyed by `journey_id`).
+
+### User-Service: Distributed Lock for Registration
+
+Before inserting a new user, the service acquires a Redlock-style 2-phase distributed lock:
+1. Acquire `user_email_lock:{email}` via Redis `SETNX` with 15s TTL on local Redis.
+2. POST `/internal/users/lock` to every peer — each peer checks uniqueness and acquires its own `SETNX`.
+3. If any peer rejects (email exists or lock contention) → roll back all acquired locks → return HTTP 409.
+
+**Why:** Without this, two nodes could simultaneously accept the same email address — split-brain registration. The lock ensures only one registration per email, regardless of which node receives the request.
+
+**Alternative: single-master for user writes.** All registrations route to one designated node. Simpler, but that node becomes a bottleneck and a single point of failure for all new signups.
+
+**Availability bias:** Unreachable peers are skipped (preferred availability over strict consistency for the demo). The catch-up sync reconciles on recovery. In production you would require a quorum.
+
+### Consistent-Hash Sharding: Write Authority, Not Data Isolation
+
+Both User-service and Conflict-service assign write authority via MD5 hash:
+- User service: `shard_id = MD5(email) % num_nodes`
+- Conflict service: `shard_id = MD5(route_id) % num_nodes`
+
+The node where `shard_id == 0` is PRIMARY (authoritative writer). **All nodes still store all data.** Sharding governs write authority and observability, not data partitioning.
+
+**Why not hard data partitioning?** Hard partitioning (each node owns a subset of data) means losing a node makes that subset unavailable. Active-active with sharding for write authority gives observability of ownership without the availability cost.
+
+**Purpose of sharding here:** Makes it visible in the Activity Feed which node is acting as primary vs replica for each route/user — a distributed systems concept demonstrated, not a performance necessity at demo scale.
+
+### Client-Side Failover: resilientFetch
+
+Every browser API call goes through `resilientFetch`:
+1. Try primary URL.
+2. On 5xx or network error → try each ALIVE peer in order.
+3. 4xx responses pass through unchanged (a rejected booking is not a node failure).
+
+The peer list comes from `/health/nodes` at login, persisted to `localStorage` — failover works even on the login screen before authentication.
+
+**Why client-side and not a shared load balancer?** There is no shared infrastructure between two physically separate laptops on a hotspot. A production deployment would use a global load balancer (AWS Route 53 health checks, for example), but client-side resilientFetch demonstrates the exact same logic.
+
+**JWT stays valid on failover:** Tokens are signed with a shared secret across all nodes. A session from Node A is accepted on Node B without re-login.
+
+---
+
+## 10.5 Failure Detection: Three-State Health Model
+
+The health monitor (implemented in `shared/health_monitor.py`) pings every registered peer's `/health` endpoint every 10 seconds:
+
+```
+ALIVE → (3 missed pings) → SUSPECT → (6 missed pings) → DEAD
+         any successful ping returns to ALIVE from any state
+```
+
+When fewer than 50% of peers are ALIVE, the node enters `LOCAL_ONLY` mode and stops attempting cross-node operations.
+
+**Why thresholds rather than φ-accrual failure detector?** A φ-accrual detector adapts thresholds based on historical heartbeat timing — more accurate under variable network conditions. Hard thresholds are simpler and sufficient for a two-laptop demo on a LAN where variance is low. For a WAN production deployment, φ-accrual would be the correct choice.
+
+**Why 3 misses to SUSPECT, 6 to DEAD?** At 10-second intervals: SUSPECT at 30s, DEAD at 60s. This matches the MULTI_LAPTOP_DEMO.md instructions. Shorter thresholds mean more false positives (brief network blips triggering failover). Longer thresholds mean slower recovery detection.
+
+---
+
+## 10.6 Partition Detection and Handling
+
+`shared/partition.py` runs inside each service, probing its own dependencies (Postgres, RabbitMQ, Conflict-service) every 5 seconds. Each dependency has its own state machine:
+
+```
+CONNECTED → (1 miss) → SUSPECTED → (3 misses) → PARTITIONED → (probe success) → MERGING → CONNECTED
+```
+
+**During PARTITIONED:**
+- Enforcement-service continues from Redis cache with `X-Cache-Stale: true` and `X-Partition-Status: PARTITIONED` headers.
+- Notification delivery is deferred until RabbitMQ is reachable.
+- All responses carry `X-Partition-Status` so clients know the data quality.
+
+**On heal (MERGING):** Queued operations are replayed. The conflict-service periodic re-sync backfills any slots missed during the partition.
+
+**Without majority partition:** If the conflict-service is unreachable from all nodes, bookings fail fast (circuit breaker) rather than hanging. The enforcement cache continues serving reads. No split-brain is possible for bookings because the conflict-service is the single atomic authority — without it, no new booking can be confirmed.
+
+---
+
+## 10.7 Circuit Breaker
+
+The circuit breaker (`shared/circuit_breaker.py`) wraps every call from journey-service to conflict-service:
+
+```
+CLOSED (normal) → (3 consecutive failures) → OPEN (fail fast, no network hit)
+OPEN → (30s timeout) → HALF-OPEN (one probe allowed)
+HALF-OPEN success → CLOSED
+HALF-OPEN failure → OPEN again
+```
+
+**Why:** Without a circuit breaker, a slow or crashed conflict-service would cause every booking request to hang for the full timeout duration (30s), exhausting connection pools and bringing down journey-service under load. With the circuit breaker, after 3 failures the service fails fast immediately, preserving journey-service health and giving conflict-service time to recover.
+
+**Per-endpoint circuit breakers:** `conflict_client.py` maintains one circuit breaker per URL (local + each peer). A crashed local conflict-service opens only its own breaker while the peer endpoint remains available. This is why booking continues working even when the local conflict container is down.
+
+**Alternative:** Simple timeout with retry. Retries under load create a "retry storm" — every client retrying at the same time amplifies the load on the recovering service. The circuit breaker prevents this by not retrying at all while OPEN.
+
+---
+
+## 10.8 PostgreSQL Replication: Read/Write Separation
+
+Each service's database has a primary and a streaming replica. Reads go to the replica; writes go to the primary. This is implemented at the application level — separate connection pools, selected by dependency injection in each route.
+
+**Why:** Read/write separation offloads read traffic from the write primary, which is already under load from `SELECT FOR UPDATE` locking. At 167 bookings/s, enforcement lookups and analytics queries hitting the same primary as conflict checks would serialize with the booking locks.
+
+**WAL streaming replication:** PostgreSQL Write-Ahead Logging streams every committed write to the replica in near-real-time. The replica lag is exposed at `/api/analytics/replica-lag` via `pg_stat_replication` — you can prove replication is working during a demo.
+
+**Alternative: single database.** No replica lag to worry about, but no read scalability and primary is a single point of failure.
+
+---
+
+## 10.9 Redis: Caching, Deduplication, Distributed Locking
+
+Redis serves three distinct purposes:
+
+**1. Enforcement cache (sub-millisecond reads):**
+`active_journey:vehicle:{plate}` keyed entries with TTL = (estimated arrival + 1 hour). On a cache hit, enforcement returns in <20ms. On miss, falls back to Journey-service API, populates cache, returns. Event-driven invalidation on `journey.cancelled` and `journey.completed` keeps the cache fresh without relying solely on TTL.
+
+**Alternative:** Always query Journey-service directly. Adds 50-200ms per enforcement check. At scale, enforcement agents check thousands of vehicles — this is not acceptable.
+
+**2. Message deduplication (SETNX on message ID, 24-hour TTL):**
+RabbitMQ guarantees at-least-once delivery. The same `journey.confirmed` event can arrive twice (broker redelivery on consumer crash). Each consumer (Notification, Analytics, Enforcement) uses `SETNX notif:processed:{msgId}` before processing. If the key exists, skip. This turns at-least-once into effectively-exactly-once.
+
+**3. Distributed registration lock (Redlock-style):**
+Described in 10.4. `SETNX user_email_lock:{email}` with 15s TTL, acquired on local Redis plus all peer Redis instances before any registration proceeds.
+
+**Redis Sentinel (quorum 2):** If the Redis primary fails, Sentinel promotes the replica within ~15 seconds. Services auto-reconnect. Without Sentinel, a Redis crash would take down enforcement caching and message deduplication simultaneously.
+
+---
+
+## 10.10 Points System: Pessimistic Locking
+
+Every confirmed booking earns points. Points are stored in a ledger table with pessimistic locking (`SELECT FOR UPDATE` on the user's points row) before any earn or spend operation.
+
+**Why pessimistic locking for points?** Points are a financial-equivalent resource. "Double spending" (spending the same points twice via two concurrent requests) is a correctness failure. Optimistic locking (check-and-update with version number) could be used, but under high concurrency the retry rate would be high. Pessimistic locking serializes writes cleanly at the cost of some throughput — acceptable since points operations are low-frequency compared to bookings.
+
+**Immediate access:** Points are awarded in the same transaction as the `CONFIRMED` status update. The user can spend them immediately after booking — there is no asynchronous delay for point crediting.
+
+---
+
+## 10.11 Summary: Every Choice Mapped to a Requirement
+
+| Design Choice | Requirement It Satisfies | Alternative Rejected | Why |
+|---|---|---|---|
+| SERIALIZABLE + SELECT FOR UPDATE | No double-booking | READ COMMITTED | READ COMMITTED allows concurrent reads to both see capacity=0 and both book |
+| Transactional outbox | No lost confirmed bookings | Direct RabbitMQ publish | Broker outage would fail bookings |
+| Saga as default booking protocol | High availability booking | 2PC only | 2PC holds a slot during PREPARE, hurting throughput; 2PC also available as demo |
+| Active-active replication | Availability under node failure | Active-passive | Passive has warm-up gap on failover |
+| Eventual consistency for cross-node slots | Booking throughput | Synchronous replication | Synchronous replication adds per-booking round-trip latency |
+| Client-side resilientFetch | No shared infrastructure needed | Global load balancer | Two laptops on a hotspot have no shared LB |
+| Grid-cell road model | National-scale road conflict detection | Named road segment DB | Road segment DB requires external data; grid scales to any coordinates |
+| 30-minute time slots | Manageable write volume | Per-minute slots | Per-minute: 30× more rows and 30× more writes per booking |
+| Per-endpoint circuit breakers | Booking survives local conflict-service crash | Single circuit breaker | Single CB: one failure blocks all endpoints including healthy peers |
+| Redis enforcement cache | <200ms enforcement verification | Direct DB query | DB query at enforcement scale too slow |
+| Redlock-style distributed lock for registration | No duplicate accounts across nodes | Single-master for writes | Single master is a bottleneck and single point of failure |
+| Consistent-hash sharding (write authority only) | Demonstrate sharding without availability cost | Hard data partitioning | Hard partitioning makes data unavailable when owning node is down |
+| Pessimistic locking for points | No double spending | Optimistic locking | High retry rate under concurrent spend; points are correctness-critical |
+| RabbitMQ topic exchange | Fan-out decoupling | Direct HTTP calls | HTTP calls create tight coupling; downstream outage fails bookings |
+| PostgreSQL WAL replica | Read scalability | Single DB | Read-heavy enforcement + analytics would contend with booking locks |
+| Dead-letter exchange (DLX) | No message loss on consumer failure | Discard on failure | Unprocessable messages visible for inspection without blocking consumers |
