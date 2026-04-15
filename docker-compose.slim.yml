@@ -20,6 +20,9 @@ services:
     profiles: [full]
   rabbitmq-3:
     profiles: [full]
+  api-gateway-1:
+    ports:
+      - "8080:80"   # expose nginx directly on 8080 when HAProxy is not running (slim mode)
   api-gateway-2:
     profiles: [full]
   haproxy:
@@ -33,12 +36,23 @@ services:
   analytics-service:
     environment:
       REDIS_SENTINEL_ADDRS: ""
+      DATABASE_READ_URL: "postgresql://analytics_user:analytics_pass@postgres-analytics:5432/analytics_db"
   user-service:
     environment:
       REDIS_SENTINEL_ADDRS: ""
+      DATABASE_READ_URL: "postgresql+asyncpg://users_user:users_pass@postgres-users:5432/users_db"
+      # Set PEER_USER_URLS in your shell before docker compose up.
+      # Example: export PEER_USER_URLS=http://172.20.10.12:8080
+      # Uses the nginx gateway so only port 8080 needs to be open between nodes.
+      PEER_USER_URLS: "${PEER_USER_URLS:-}"
   journey-service:
     environment:
       REDIS_SENTINEL_ADDRS: ""
+      DATABASE_READ_URL: "postgresql+asyncpg://journeys_user:journeys_pass@postgres-journeys:5432/journeys_db"
+      PEER_CONFLICT_URLS: "${PEER_CONFLICT_URLS:-}"
   conflict-service:
     environment:
       REDIS_SENTINEL_ADDRS: ""
+      # Set PEER_CONFLICT_URLS in your shell (or .env file) before running docker compose.
+      # Example: export PEER_CONFLICT_URLS=http://172.20.10.12:8003
+      PEER_CONFLICT_URLS: "${PEER_CONFLICT_URLS:-}"

@@ -14,6 +14,7 @@ from sqlalchemy import select, and_, func
 
 from .database import Journey, IdempotencyRecord
 from .saga import BookingSaga
+from .coordinator import TwoPhaseCoordinator
 from shared.schemas import (
     JourneyCreateRequest,
     JourneyResponse,
@@ -32,7 +33,9 @@ class JourneyService:
 
     @staticmethod
     async def create_journey(
-        db: AsyncSession, user_id: str, request: JourneyCreateRequest
+        db: AsyncSession, user_id: str, request: JourneyCreateRequest,
+        use_2pc: bool = False,
+        user_name: str = "",
     ) -> JourneyResponse:
         """Create a new journey booking (triggers the booking saga)."""
 
@@ -88,10 +91,16 @@ class JourneyService:
             db.add(IdempotencyRecord(key=request.idempotency_key, journey_id=journey_id))
             await db.commit()
 
-        logger.info(f"Journey {journey_id} created as PENDING for user {user_id}")
+        logger.info(
+            f"Journey {journey_id} created as PENDING for user {user_id} "
+            f"(protocol={'2PC' if use_2pc else 'Saga'})"
+        )
 
-        # Execute the booking saga
-        final_status, rejection_reason = await BookingSaga.execute(journey)
+        # Execute the booking saga OR Two-Phase Commit coordinator
+        if use_2pc:
+            final_status, rejection_reason = await TwoPhaseCoordinator.execute(journey, db, user_name=user_name)
+        else:
+            final_status, rejection_reason = await BookingSaga.execute(journey)
 
         # Determine event type
         if final_status == JourneyStatus.CONFIRMED:
@@ -104,7 +113,7 @@ class JourneyService:
         # never lost even if RabbitMQ is temporarily unavailable.
         journey.status = final_status.value
         journey.rejection_reason = rejection_reason
-        await BookingSaga.save_outbox_event(db, journey, event_type)
+        await BookingSaga.save_outbox_event(db, journey, event_type, user_name=user_name)
         await db.commit()
         await db.refresh(journey)
 
@@ -120,6 +129,11 @@ class JourneyService:
                 )
             except Exception as e:
                 logger.warning(f"Failed to award booking points: {e}")
+
+        # Replicate to peers (fire-and-forget)
+        import asyncio
+        from .replication import replicate_journey
+        asyncio.create_task(replicate_journey(JourneyService._to_dict(journey)))
 
         return JourneyService._to_response(journey)
 
@@ -190,9 +204,20 @@ class JourneyService:
 
         # Update status and write outbox event in the same transaction
         journey.status = JourneyStatus.CANCELLED.value
-        await BookingSaga.save_outbox_event(db, journey, EventType.JOURNEY_CANCELLED)
+        await BookingSaga.save_outbox_event(db, journey, EventType.JOURNEY_CANCELLED,
+                                            user_name="")
         await db.commit()
         await db.refresh(journey)
+
+        # Release the booking slot in the conflict service IMMEDIATELY (synchronous).
+        # The outbox/RabbitMQ path has a 2-4 second delay — without this direct call a
+        # re-booking attempt during that window is incorrectly rejected as a time overlap.
+        try:
+            from .conflict_client import resilient_conflict_cancel
+            await resilient_conflict_cancel(journey_id)
+        except Exception as e:
+            # Non-fatal: the async RabbitMQ event will clean up eventually.
+            logger.warning(f"Direct conflict cancel failed for {journey_id}: {e}")
 
         # Deduct points for cancellation
         try:
@@ -205,6 +230,12 @@ class JourneyService:
             logger.warning(f"Could not deduct cancellation points: {e}")
 
         logger.info(f"Journey {journey_id} cancelled by user {user_id}")
+
+        # Replicate cancellation to peers
+        import asyncio
+        from .replication import replicate_journey
+        asyncio.create_task(replicate_journey(JourneyService._to_dict(journey)))
+
         return JourneyService._to_response(journey)
 
     @staticmethod
@@ -282,6 +313,29 @@ class JourneyService:
         except Exception as e:
             logger.error(f"Vehicle verification error: {e}")
             raise ValueError("Vehicle verification failed. Please try again.")
+
+    @staticmethod
+    def _to_dict(journey: Journey) -> dict:
+        """Serialize a Journey to a plain dict for cross-peer replication."""
+        return {
+            "id": journey.id,
+            "user_id": journey.user_id,
+            "origin": journey.origin,
+            "destination": journey.destination,
+            "origin_lat": journey.origin_lat,
+            "origin_lng": journey.origin_lng,
+            "destination_lat": journey.destination_lat,
+            "destination_lng": journey.destination_lng,
+            "departure_time": journey.departure_time.isoformat() if journey.departure_time else None,
+            "estimated_duration_minutes": journey.estimated_duration_minutes,
+            "estimated_arrival_time": journey.estimated_arrival_time.isoformat() if journey.estimated_arrival_time else None,
+            "vehicle_registration": journey.vehicle_registration,
+            "vehicle_type": journey.vehicle_type,
+            "status": journey.status,
+            "rejection_reason": journey.rejection_reason,
+            "route_id": journey.route_id,
+            "idempotency_key": journey.idempotency_key,
+        }
 
     @staticmethod
     def _to_response(journey: Journey) -> JourneyResponse:

@@ -2,13 +2,19 @@
 User Service - API routes.
 """
 
+import asyncio
 import logging
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
-from .database import get_db
+from .database import get_db, User as UserModel
 from .service import UserService
+from .replication import (
+    acquire_distributed_lock, release_distributed_lock,
+    replicate_user, replicate_vehicle, shard_for_email,
+)
 from shared.auth import get_current_user
 from shared.messaging import get_broker
 from shared.schemas import (
@@ -33,15 +39,39 @@ router = APIRouter(prefix="/api/users", tags=["Users"])
     responses={400: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
 )
 async def register(request: UserRegisterRequest, db: AsyncSession = Depends(get_db)):
-    """Register a new driver account."""
+    """
+    Register a new driver account.
+
+    DS flow:
+      1. Compute shard assignment (consistent hash on email)
+      2. Acquire distributed lock (local Redis SETNX + peer coordination)
+      3. Register locally inside a serializable transaction
+      4. Release distributed lock
+      5. Replicate user to all peers (async, non-blocking)
+    """
+    from shared.schemas import UserRole
+    if request.role != UserRole.DRIVER:
+        request.role = UserRole.DRIVER
+
+    # Step 1 — shard assignment (logged for demo visibility)
+    shard_id, home = shard_for_email(request.email)
+    logger.info(
+        f"[shard] register email={request.email} → shard={shard_id} home={home}"
+    )
+
+    # Step 2 — distributed lock
+    acquired, redis_conn = await acquire_distributed_lock(request.email)
+    if not acquired:
+        raise HTTPException(
+            status_code=409,
+            detail="Email registration is currently in progress on another node, or the email is already taken. Please try again.",
+        )
+
     try:
-        from shared.schemas import UserRole
-        # Ensure default registrations are only DRIVERs
-        if request.role != UserRole.DRIVER:
-            request.role = UserRole.DRIVER
+        # Step 3 — local registration
         user = await UserService.register(db, request)
 
-        # Publish user.registered event (best-effort — don't fail registration if broker is down)
+        # Publish event (best-effort)
         try:
             broker = await get_broker()
             await broker.publish(
@@ -57,9 +87,31 @@ async def register(request: UserRegisterRequest, db: AsyncSession = Depends(get_
         except Exception as e:
             logger.warning(f"Could not publish user.registered event: {e}")
 
+        # Step 4 — release lock
+        await release_distributed_lock(request.email, redis_conn)
+        redis_conn = None  # prevent double-release in finally
+
+        # Step 5 — fetch ORM object for password_hash and replicate async
+        user_orm = (await db.execute(
+            select(UserModel).where(UserModel.id == user.id)
+        )).scalar_one()
+        asyncio.create_task(replicate_user({
+            "id": user_orm.id,
+            "email": user_orm.email,
+            "password_hash": user_orm.password_hash,
+            "full_name": user_orm.full_name,
+            "license_number": user_orm.license_number,
+            "role": user_orm.role,
+            "is_active": user_orm.is_active,
+        }))
+
         return user
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    finally:
+        # Ensure lock is always released on any exception
+        if redis_conn is not None:
+            await release_distributed_lock(request.email, redis_conn)
 
 
 @router.post(
@@ -143,6 +195,13 @@ async def register_vehicle(
         vehicle = await UserService.register_vehicle(
             db, current_user["user_id"], request.registration, request.vehicle_type.value
         )
+        # Replicate vehicle to all peers async
+        asyncio.create_task(replicate_vehicle({
+            "id": vehicle.id,
+            "user_id": vehicle.user_id,
+            "registration": vehicle.registration,
+            "vehicle_type": vehicle.vehicle_type,
+        }))
         return VehicleResponse(
             id=vehicle.id,
             user_id=vehicle.user_id,

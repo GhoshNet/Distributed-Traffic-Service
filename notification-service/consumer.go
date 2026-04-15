@@ -38,23 +38,23 @@ type eventTemplate struct {
 var eventMessages = map[string]eventTemplate{
 	"journey.confirmed": {
 		title:    "Journey Confirmed \u2705",
-		template: "Your journey from {origin} to {destination} at {departure_time} has been confirmed.",
+		template: "{user_name} has confirmed a journey from {origin} to {destination} departing at {departure_time}. Vehicle: {vehicle_registration}.",
 	},
 	"journey.rejected": {
 		title:    "Journey Rejected \u274c",
-		template: "Your journey from {origin} to {destination} was rejected. Reason: {rejection_reason}",
+		template: "{user_name}'s journey from {origin} to {destination} was rejected. Reason: {rejection_reason}",
 	},
 	"journey.cancelled": {
 		title:    "Journey Cancelled \U0001f6ab",
-		template: "Your journey from {origin} to {destination} at {departure_time} has been cancelled.",
+		template: "{user_name} cancelled their journey from {origin} to {destination} (departure: {departure_time}).",
 	},
 	"journey.started": {
 		title:    "Journey Started \U0001f697",
-		template: "Your journey from {origin} to {destination} has started. Drive safely!",
+		template: "{user_name} has started their journey from {origin} to {destination}. Drive safely!",
 	},
 	"journey.completed": {
 		title:    "Journey Completed \U0001f3c1",
-		template: "Your journey from {origin} to {destination} is complete.",
+		template: "{user_name} completed their journey from {origin} to {destination}.",
 	},
 }
 
@@ -185,10 +185,16 @@ func handleEvent(body []byte, routingKey string) error {
 	}
 
 	msg := tmpl.template
+	userName := strField(data, "user_name", "")
+	if userName == "" {
+		userName = "A driver"
+	}
+	msg = strings.ReplaceAll(msg, "{user_name}", userName)
 	msg = strings.ReplaceAll(msg, "{origin}", strField(data, "origin", "Unknown"))
 	msg = strings.ReplaceAll(msg, "{destination}", strField(data, "destination", "Unknown"))
 	msg = strings.ReplaceAll(msg, "{departure_time}", strField(data, "departure_time", "Unknown"))
 	msg = strings.ReplaceAll(msg, "{rejection_reason}", strField(data, "rejection_reason", "N/A"))
+	msg = strings.ReplaceAll(msg, "{vehicle_registration}", strField(data, "vehicle_registration", "Unknown"))
 
 	notification := map[string]interface{}{
 		"event_type": routingKey,

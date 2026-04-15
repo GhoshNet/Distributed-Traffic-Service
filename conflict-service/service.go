@@ -132,8 +132,11 @@ func checkConflicts(ctx context.Context, req ConflictCheckRequest) (ConflictChec
 		return ConflictCheckResponse{}, fmt.Errorf("commit conflict check transaction: %w", err)
 	}
 
+	// Replicate the confirmed slot to peer nodes asynchronously (eventual consistency).
+	go replicateSlotToPeers(req, arrivalTime)
+
 	return ConflictCheckResponse{
-		JourneyID: req.JourneyID,
+		JourneyID:  req.JourneyID,
 		IsConflict: false,
 		CheckedAt:  time.Now().UTC(),
 	}, nil
@@ -320,20 +323,25 @@ func checkRoadCapacity(ctx context.Context, tx pgx.Tx, req ConflictCheckRequest,
 	for i, cell := range cells {
 		t := cellTime(req.DepartureTime.Time, arrivalTime, i, len(cells))
 
-		var count int
+		// Use EXISTS + FOR UPDATE on a subquery — COUNT(*) cannot be combined with
+		// FOR UPDATE in PostgreSQL (error 0A000).  We lock the matching row (if any)
+		// and then check whether it was found.
+		var id string
 		err := tx.QueryRow(ctx, `
-			SELECT COUNT(*) FROM road_segment_capacity
+			SELECT id FROM road_segment_capacity
 			WHERE grid_lat = $1
 			  AND grid_lng = $2
 			  AND time_slot_start <= $3
 			  AND time_slot_end > $3
 			  AND current_bookings >= max_capacity
+			LIMIT 1
 			FOR UPDATE
-		`, cell.lat, cell.lng, t).Scan(&count)
-		if err != nil {
+		`, cell.lat, cell.lng, t).Scan(&id)
+		if err != nil && !isNoRows(err) {
 			return "", err
 		}
-		if count > 0 {
+		if err == nil {
+			// A row was found — the segment is at capacity
 			return fmt.Sprintf(
 				"Road segment (%.2f, %.2f) is fully booked at %s — segment %d of %d along route",
 				cell.lat, cell.lng, t.Format("15:04 UTC"), i+1, len(cells),
@@ -346,17 +354,24 @@ func checkRoadCapacity(ctx context.Context, tx pgx.Tx, req ConflictCheckRequest,
 // recordBookingSlot inserts the booking and increments capacity for every grid
 // cell along the path (not just origin and destination).
 func recordBookingSlot(ctx context.Context, tx pgx.Tx, req ConflictCheckRequest, arrivalTime time.Time) error {
+	routeID := req.RouteID // may be empty string — stored as NULL via NullString below
+	var routeIDVal interface{}
+	if routeID != "" {
+		routeIDVal = routeID
+	} // else nil → SQL NULL
+
 	_, err := tx.Exec(ctx, `
 		INSERT INTO booked_slots
 			(id, journey_id, user_id, vehicle_registration, departure_time, arrival_time,
-			 origin_lat, origin_lng, destination_lat, destination_lng, is_active)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true)
+			 origin_lat, origin_lng, destination_lat, destination_lng, route_id, is_active)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,true)
 	`,
 		uuid.New().String(),
 		req.JourneyID, req.UserID, req.VehicleRegistration,
 		req.DepartureTime.Time, arrivalTime,
 		req.OriginLat, req.OriginLng,
 		req.DestinationLat, req.DestinationLng,
+		routeIDVal,
 	)
 	if err != nil {
 		return err
@@ -398,8 +413,9 @@ var ErrNotFound = errors.New("journey not found")
 // cancelBookingSlot marks the booking inactive AND decrements road capacity for
 // every grid cell along the path, so those slots become available again.
 //
-// Previously only set is_active = false — capacity was never freed, meaning
-// cancelled journeys permanently consumed road capacity.
+// Uses the stored route_id (if any) to reconstruct the exact same waypoint-based
+// grid cells that were reserved at booking time — preventing a capacity leak when
+// the booking used real road waypoints instead of a straight-line path.
 func cancelBookingSlot(ctx context.Context, journeyID string) error {
 	tx, err := db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -407,18 +423,19 @@ func cancelBookingSlot(ctx context.Context, journeyID string) error {
 	}
 	defer tx.Rollback(ctx)
 
-	// Deactivate and retrieve path endpoints in one statement.
+	// Deactivate and retrieve path endpoints + route_id in one statement.
 	var originLat, originLng, destLat, destLng float64
 	var departureTime, arrivalTime time.Time
+	var routeID *string // NULL when no predefined route was used
 	err = tx.QueryRow(ctx, `
 		UPDATE booked_slots
 		SET is_active = false
 		WHERE journey_id = $1 AND is_active = true
 		RETURNING origin_lat, origin_lng, destination_lat, destination_lng,
-		          departure_time, arrival_time
+		          departure_time, arrival_time, route_id
 	`, journeyID).Scan(
 		&originLat, &originLng, &destLat, &destLng,
-		&departureTime, &arrivalTime,
+		&departureTime, &arrivalTime, &routeID,
 	)
 	if err != nil {
 		if isNoRows(err) {
@@ -427,8 +444,19 @@ func cancelBookingSlot(ctx context.Context, journeyID string) error {
 		return err
 	}
 
-	// Free capacity on every cell along the cancelled journey's path.
-	cells := pathGridCells(originLat, originLng, destLat, destLng)
+	// Reconstruct exactly the same cells that were incremented at booking time.
+	// If a route_id was stored, load the real road waypoints; otherwise straight-line.
+	var cells []gridCell
+	if routeID != nil && *routeID != "" {
+		wps, err := loadRouteWaypoints(ctx, *routeID)
+		if err == nil && len(wps) >= 2 {
+			cells = pathGridCellsFromWaypoints(wps)
+		}
+	}
+	if len(cells) == 0 {
+		cells = pathGridCells(originLat, originLng, destLat, destLng)
+	}
+
 	for i, cell := range cells {
 		t := cellTime(departureTime, arrivalTime, i, len(cells))
 		if err := decrementCapacity(ctx, tx, cell.lat, cell.lng, t); err != nil {

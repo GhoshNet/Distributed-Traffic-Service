@@ -65,8 +65,8 @@
     <nav id="sidebar">
       <div class="sidebar-logo">JB</div>
       <button class="nav-btn active" id="nav-map" onclick="go('map')" title="Live Map">🗺️</button>
-      <button class="nav-btn" id="nav-dash" onclick="go('dash')" title="Dashboard">📊</button>
       <button class="nav-btn" id="nav-journeys" onclick="go('journeys')" title="Journeys">🛣️</button>
+      <button class="nav-btn" id="nav-simulate" onclick="go('simulate')" title="System & Simulate">⚡</button>
       <div class="sidebar-spacer"></div>
       <button class="nav-btn" onclick="logout()" title="Logout">🚪</button>
     </nav>
@@ -79,6 +79,7 @@
           <p>System Operating Nominally</p>
         </div>
         <div class="topbar-right">
+          <div id="node-indicator" style="font-size:12px;color:var(--success);margin-right:12px">🟢 Primary</div>
           <div id="ws-status"><div id="ws-dot" class="ws-dot"></div> Live Data</div>
         </div>
       </div>
@@ -89,34 +90,21 @@
           <div class="card" style="padding:4px">
             <div id="map"></div>
           </div>
+          <div class="card" style="margin-top:12px">
+            <div class="card-title" style="display:flex;align-items:center;gap:10px;">
+              Map View
+              <!-- Mode toggle -->
+              <div style="display:flex;gap:4px;margin-left:auto;background:var(--bg);border-radius:6px;padding:3px">
+                <button id="btn-mode-routes" class="btn btn-sm btn-primary" onclick="setMapMode('routes')" title="Show all predefined routes">🗺️ All Routes</button>
+                <button id="btn-mode-journeys" class="btn btn-sm" onclick="setMapMode('journeys')" title="Show only your booked journeys" style="background:transparent;color:var(--text-muted)">📍 My Journeys</button>
+              </div>
+            </div>
+            <div id="map-legend" class="item-list" style="max-height:160px;overflow-y:auto;margin-top:6px"></div>
+          </div>
         </div>
       </div>
 
-      <!-- DASH VIEW -->
-      <div id="view-dash" class="view">
-        <div class="g4">
-          <div class="card">
-            <div class="stat-label">Your Points Balance</div>
-            <div class="stat-value" id="stat-points" style="color:var(--secondary)">0</div>
-          </div>
-          <div class="card">
-            <div class="stat-label">Total Events Today</div>
-            <div class="stat-value" id="stat-total">0</div>
-          </div>
-          <div class="card">
-            <div class="stat-label">Confirmed Journeys</div>
-            <div class="stat-value" id="stat-conf" style="color:var(--success)">0</div>
-          </div>
-          <div class="card">
-            <div class="stat-label">Rejected Journeys</div>
-            <div class="stat-value" id="stat-rej" style="color:var(--danger)">0</div>
-          </div>
-        </div>
-        <div class="card" style="margin-top:20px">
-          <div class="card-title">Points History</div>
-          <div id="points-history" class="item-list"></div>
-        </div>
-      </div>
+
 
       <!-- JOURNEYS VIEW -->
       <div id="view-journeys" class="view">
@@ -124,6 +112,13 @@
           <div class="card">
             <div class="card-title">Book New Journey</div>
             <form onsubmit="bookJourney(event)">
+              <!-- Quick Route selector (from predefined Irish routes) -->
+              <div class="form-group">
+                <label class="form-label">Quick Route</label>
+                <select class="form-input" id="j-quick-route" onchange="applyQuickRoute()">
+                  <option value="">— or use free-form search below —</option>
+                </select>
+              </div>
               <div class="form-group">
                 <label class="form-label">Origin</label>
                 <div class="autocomplete-wrapper">
@@ -150,6 +145,14 @@
                 <label class="form-label">Vehicle</label>
                 <select class="form-input" id="j-vehicle" required>
                   <option value="">Select a registered vehicle...</option>
+                </select>
+              </div>
+              <!-- Booking Protocol selector -->
+              <div class="form-group">
+                <label class="form-label">Booking Protocol</label>
+                <select class="form-input" id="j-protocol">
+                  <option value="saga">Saga (default — eventual consistency)</option>
+                  <option value="2pc">2PC / TCC (stronger consistency)</option>
                 </select>
               </div>
               <button class="btn btn-primary btn-full" type="submit">Submit Request</button>
@@ -181,6 +184,124 @@
             <div id="journey-list" class="item-list"></div>
           </div>
         </div>
+      </div>
+
+      <!-- SIMULATE VIEW -->
+      <div id="view-simulate" class="view">
+
+        <!-- Combined stats row: analytics + node status -->
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-bottom:20px">
+          <div class="card">
+            <div class="stat-label">Total Events Today</div>
+            <div class="stat-value" id="stat-total">0</div>
+          </div>
+          <div class="card">
+            <div class="stat-label">Confirmed Journeys</div>
+            <div class="stat-value" id="stat-conf" style="color:var(--success)">0</div>
+          </div>
+          <div class="card">
+            <div class="stat-label">Rejected Journeys</div>
+            <div class="stat-value" id="stat-rej" style="color:var(--danger)">0</div>
+          </div>
+          <div class="card">
+            <div class="stat-label">This Node</div>
+            <div class="stat-value" id="sim-self-status" style="font-size:16px">🟢 ALIVE</div>
+          </div>
+          <div class="card">
+            <div class="stat-label">Peers ALIVE</div>
+            <div class="stat-value" id="sim-alive" style="color:var(--success)">—</div>
+          </div>
+          <div class="card">
+            <div class="stat-label">Peers SUSPECT / DEAD</div>
+            <div class="stat-value" id="sim-suspect-dead" style="color:var(--warning)">—</div>
+          </div>
+          <div class="card">
+            <div class="stat-label">Network Mode</div>
+            <div class="stat-value" id="sim-mode" style="font-size:16px">—</div>
+          </div>
+        </div>
+
+        <!-- Node health: laptops + internal services side by side -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+          <div class="card">
+            <div class="card-title" style="display:flex;align-items:center;gap:10px;">
+              🖥️ Connected Laptops
+              <span id="local-only-badge" style="display:none;background:var(--danger);color:#fff;font-size:11px;padding:2px 8px;border-radius:4px;">LOCAL ONLY</span>
+              <span id="sim-node-count" style="font-size:12px;color:var(--text-muted)"></span>
+              <button class="btn btn-sm btn-primary" onclick="loadSimStats();loadNodeHealth()" style="margin-left:auto">Refresh</button>
+            </div>
+            <div style="font-size:12px;color:var(--text-muted);margin:4px 0 8px">Other machines on the same LAN. Register them below.</div>
+            <div id="sim-node-health-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-top:10px;"></div>
+          </div>
+          <div class="card">
+            <div class="card-title">⚙️ Internal Service Health</div>
+            <div style="font-size:12px;color:var(--text-muted);margin:4px 0 8px">Microservices on <em>this</em> node — conflict, user, enforcement, analytics, etc.</div>
+            <div id="sim-svc-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-top:10px;"></div>
+          </div>
+        </div>
+
+        <!-- Simulation controls -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+          <div class="card">
+            <div class="card-title">This Node — Kill / Recover</div>
+            <div style="font-size:12px;color:var(--text-muted);margin:8px 0 12px">
+              Simulates a crash: <code>/health</code> returns 503. Peers detect SUSPECT in ~30 s, DEAD in ~60 s.
+            </div>
+            <div style="display:flex;gap:8px">
+              <button id="btn-kill-node" class="btn btn-full" style="background:var(--danger);color:#fff;flex:1" onclick="simKillNode()">💀 Kill Node</button>
+              <button id="btn-recover-node" class="btn btn-full" style="background:var(--success);color:#fff;flex:1" onclick="simRecoverNode()">💚 Recover Node</button>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">Distributed Problem Demos</div>
+            <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+              <button class="btn btn-primary btn-full" onclick="simDemo('consistency')">🔀 Data Consistency Conflict</button>
+              <button class="btn btn-primary btn-full" onclick="simDemo('storm')">🌪️ Concurrent Booking Storm</button>
+              <button class="btn btn-primary btn-full" onclick="simDemo('2pc')">🔄 Two-Phase Commit Demo</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Recovery tools + Register remote peer side by side -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+          <div class="card">
+            <div class="card-title">Recovery Tools</div>
+            <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+              <button class="btn btn-primary" onclick="simDrainOutbox()">🚀 Drain Outbox</button>
+              <button class="btn btn-primary" onclick="simRebuildCache()">♻️ Rebuild Cache</button>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">Register Remote Laptop</div>
+            <div style="font-size:12px;color:var(--text-muted);margin:6px 0 10px">
+              Add a teammate's node. Health URL = their <code>/health</code> endpoint (e.g. <code>http://172.20.10.12:8080/health</code>).
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <input class="form-input" type="text" id="peer-name" placeholder="Name (e.g. alice-node)" style="flex:1;min-width:120px">
+              <input class="form-input" type="text" id="peer-url" placeholder="http://192.168.1.x:8080/health" style="flex:2;min-width:170px">
+              <button class="btn btn-primary" onclick="simRegisterPeer()">+ Add</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Logs side by side -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+          <div class="card">
+            <div class="card-title">Simulation Log</div>
+            <div id="sim-log" style="font-family:monospace;font-size:12px;background:var(--bg);padding:12px;border-radius:6px;height:300px;overflow-y:auto;white-space:pre-wrap;color:var(--text-muted)">Waiting for events…</div>
+          </div>
+          <div class="card">
+            <div class="card-title" style="display:flex;align-items:center;gap:10px;">
+              Distributed Activity Feed
+              <span id="activity-node-count" style="font-size:12px;color:var(--text-muted)"></span>
+              <span id="activity-live-dot" style="width:8px;height:8px;border-radius:50%;background:var(--success);display:inline-block;margin-left:4px" title="Live — polling all nodes every 5s"></span>
+              <button class="btn btn-sm btn-primary" onclick="clearActivityFeed()" style="margin-left:auto">Clear</button>
+            </div>
+            <div style="font-size:11px;color:var(--text-muted);margin:4px 0 8px">Live from <strong>all nodes</strong> — bookings, replication, conflicts, failovers. Refreshes every 5 s.</div>
+            <div id="activity-feed" style="font-family:monospace;font-size:11px;background:var(--bg);padding:12px;border-radius:6px;height:300px;overflow-y:auto;white-space:pre-wrap;color:var(--text-muted)">Connecting to nodes…</div>
+          </div>
+        </div>
+
       </div>
 
     </div>

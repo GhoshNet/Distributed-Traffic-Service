@@ -9,7 +9,7 @@ import jwt
 from fastapi import HTTPException, Security, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-_DEFAULT_SECRET = "super-secret-jwt-key-change-in-production"
+_DEFAULT_SECRET = "keefkfwjNBEFINoodwoedibIOEJFKWNFIjjjdIIIOOP"
 JWT_SECRET = os.getenv("JWT_SECRET", _DEFAULT_SECRET)
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 24
@@ -24,7 +24,7 @@ if JWT_SECRET == _DEFAULT_SECRET:
 security = HTTPBearer()
 
 
-def create_access_token(user_id: str, email: str, license_number: str, role: str = "DRIVER") -> tuple[str, int]:
+def create_access_token(user_id: str, email: str, license_number: str, role: str = "DRIVER", full_name: str = "") -> tuple[str, int]:
     """Create a JWT access token. Returns (token, expires_in_seconds)."""
     expires_delta = timedelta(hours=JWT_EXPIRATION_HOURS)
     expire = datetime.utcnow() + expires_delta
@@ -34,6 +34,7 @@ def create_access_token(user_id: str, email: str, license_number: str, role: str
         "email": email,
         "license": license_number,
         "role": role,
+        "full_name": full_name,
         "exp": expire,
         "iat": datetime.utcnow(),
     }
@@ -45,7 +46,8 @@ def create_access_token(user_id: str, email: str, license_number: str, role: str
 def decode_token(token: str) -> dict:
     """Decode and validate a JWT token."""
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        # Add leeway=300 (5 mins) to handle clock skew between different laptops
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM], leeway=300)
         return payload
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token has expired")
@@ -63,6 +65,7 @@ async def get_current_user(
         "email": payload["email"],
         "license": payload.get("license"),
         "role": payload.get("role", "DRIVER"),
+        "full_name": payload.get("full_name", ""),
     }
 
 

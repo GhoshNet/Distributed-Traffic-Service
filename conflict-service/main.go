@@ -16,12 +16,44 @@ import (
 func main() {
 	cfg := loadConfig()
 	log.SetFlags(log.LstdFlags)
-	log.Printf("[%s] starting up...", cfg.ServiceName)
+	initLogBuffer() // must be before any log.Printf — captures all subsequent log output
+	log.Printf("[%s] starting up... node=%s", cfg.ServiceName, logNodeID)
+
+	peerConflictURLs = cfg.PeerConflictURLs
+	if len(peerConflictURLs) > 0 {
+		log.Printf("Cross-node replication enabled — peers: %v", peerConflictURLs)
+	}
 
 	if err := initDB(cfg.DatabaseURL); err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	log.Println("Database tables created/verified")
+
+	// Populate shard routing table from known routes
+	if routes, err := listAllRoutes(context.Background()); err == nil {
+		ids := make([]string, len(routes))
+		for i, r := range routes {
+			ids[i] = r.RouteID
+		}
+		registerKnownRoutes(ids)
+		log.Printf("[shard] registered %d routes for shard assignment (total shards: %d)",
+			len(ids), 1+len(peerConflictURLs))
+	}
+
+	// Startup catch-up sync + self-announcement: pull all active slots from
+	// every known peer and tell them about us so peering is bidirectional.
+	for _, peer := range peerConflictURLs {
+		peer := peer
+		go func() {
+			time.Sleep(3 * time.Second) // wait for own DB to be fully ready
+			syncFromPeer(peer)
+			announceSelf(peer) // tell peer our URL — no more manual PEER_CONFLICT_URLS on both sides
+		}()
+	}
+
+	// Periodic re-sync every 5 minutes — fills any gap caused by missed pushes
+	// while this node was temporarily unreachable.
+	startPeriodicSync(5 * time.Minute)
 
 	if err := startConsumer(cfg.RabbitMQURL); err != nil {
 		log.Printf("Warning: could not connect to RabbitMQ: %v", err)
@@ -35,8 +67,18 @@ func main() {
 
 	r.Get("/health", healthHandler)
 	r.Get("/api/routes", listRoutesHandler)
+	// Also expose under /api/conflicts/ prefix so the nginx gateway can forward it
+	// without a separate upstream location block.
+	r.Get("/api/conflicts/routes", listRoutesHandler)
 	r.Post("/api/conflicts/check", checkConflictsHandler)
 	r.Post("/api/conflicts/cancel/{journey_id}", cancelBookingSlotHandler)
+	// Internal replication endpoints — called by peer conflict services only.
+	r.Get("/internal/slots/active", activeSlotsHandler)      // pull full state snapshot
+	r.Post("/internal/slots/replicate", replicateSlotHandler) // push a single new slot
+	r.Post("/internal/slots/cancel", replicateCancelHandler)  // push a cancellation
+	r.Post("/internal/peers/register", addPeerHandler)        // add peer at runtime
+	r.Get("/admin/logs", logsHandler)                         // cross-node log aggregation
+	r.Get("/internal/shard/info", shardInfoHandler)           // shard assignment for all routes
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.Port,
