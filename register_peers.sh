@@ -17,9 +17,23 @@ info()    { echo -e "${BLUE}[INFO]${NC} $*"; }
 success() { echo -e "${GREEN}[OK]${NC} $*"; }
 warn()    { echo -e "${YELLOW}[WARN]${NC} $*"; }
 
+is_peer_reachable() {
+    local ip="$1"
+    local http
+    http=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 \
+        "http://${ip}:8080/health" 2>/dev/null || echo "000")
+    [ "$http" = "200" ]
+}
+
 register_peer_ip() {
     local ip="$1"
     local label="${2:-$ip}"   # display name — label letter or raw IP
+
+    # Reachability check — skip entirely if the peer's gateway isn't responding
+    if ! is_peer_reachable "$ip"; then
+        warn "Skipping $label ($ip) — not reachable on port 8080 (offline or firewall)"
+        return
+    fi
 
     # 1. Conflict-service peer (triggers catch-up sync immediately)
     HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
@@ -29,7 +43,7 @@ register_peer_ip() {
         2>/dev/null || echo "000")
     [ "$HTTP" = "200" ] || [ "$HTTP" = "204" ] \
         && success "Conflict peer $label ($ip:8003) registered + catch-up triggered" \
-        || warn    "Conflict peer $label: HTTP $HTTP (is it up?)"
+        || warn    "Conflict peer $label: HTTP $HTTP"
 
     # 2. Journey-service peer
     HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
@@ -39,7 +53,7 @@ register_peer_ip() {
         2>/dev/null || echo "000")
     [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ] \
         && success "Journey peer $label ($ip:8080) registered + catch-up triggered" \
-        || warn    "Journey peer $label: HTTP $HTTP (is it up?)"
+        || warn    "Journey peer $label: HTTP $HTTP"
 
     # 3. User-service peer
     HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
@@ -49,7 +63,7 @@ register_peer_ip() {
         2>/dev/null || echo "000")
     [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ] \
         && success "User peer $label ($ip:8080) registered + catch-up triggered" \
-        || warn    "User peer $label: HTTP $HTTP (is it up?)"
+        || warn    "User peer $label: HTTP $HTTP"
 
     # 4. Health monitor
     HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
