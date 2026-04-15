@@ -595,6 +595,7 @@ services:
       JWT_SECRET: keefkfwjNBEFINoodwoedibIOEJFKWNFIjjjdIIIOOP
       AUDIT_HMAC_SECRET: auditChain9X2mPlQ7vRz4KdW8sFnE3bY
       SERVICE_NAME: analytics-service
+      SERVICES_BASE_URL: "docker"
     depends_on:
     - postgres-analytics
     - redis
