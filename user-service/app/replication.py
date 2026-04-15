@@ -20,6 +20,12 @@ from typing import List, Optional, Tuple
 
 import httpx
 import redis.asyncio as aioredis
+from shared.circuit_breaker import get_circuit_breaker, CircuitBreakerOpenError
+
+
+def _peer_cb(peer_url: str):
+    """Get-or-create a circuit breaker for a specific peer URL."""
+    return get_circuit_breaker(f"peer:{peer_url}", failure_threshold=3, reset_timeout=30.0)
 
 logger = logging.getLogger(__name__)
 
@@ -176,8 +182,10 @@ async def acquire_distributed_lock(email: str) -> Tuple[bool, Optional[aioredis.
     failed = False
     async with httpx.AsyncClient(timeout=3.0) as client:
         for peer in peers:
+            cb = _peer_cb(peer)
             try:
-                resp = await client.post(
+                resp = await cb.call(
+                    client.post,
                     f"{peer}/internal/users/lock",
                     json={"email": email, "ttl": LOCK_TTL},
                 )
@@ -190,6 +198,8 @@ async def acquire_distributed_lock(email: str) -> Tuple[bool, Optional[aioredis.
                     logger.warning(f"[dist-lock] peer {peer} REJECTED lock for {email}: {reason}")
                     failed = True
                     break
+            except CircuitBreakerOpenError:
+                logger.warning(f"[dist-lock] circuit OPEN for {peer} — skipping lock phase")
             except Exception as exc:
                 logger.warning(f"[dist-lock] peer {peer} unreachable during lock phase: {exc} — proceeding without it")
 
@@ -198,8 +208,11 @@ async def acquire_distributed_lock(email: str) -> Tuple[bool, Optional[aioredis.
         await r.delete(lock_key)
         async with httpx.AsyncClient(timeout=2.0) as client:
             for peer in locked_peers:
+                cb = _peer_cb(peer)
                 try:
-                    await client.post(f"{peer}/internal/users/unlock", json={"email": email})
+                    await cb.call(client.post, f"{peer}/internal/users/unlock", json={"email": email})
+                except CircuitBreakerOpenError:
+                    logger.warning(f"[dist-lock] circuit OPEN for {peer} — skipping rollback unlock")
                 except Exception:
                     pass
         await r.aclose()
@@ -225,8 +238,11 @@ async def release_distributed_lock(email: str, r: aioredis.Redis):
         return
     async with httpx.AsyncClient(timeout=2.0) as client:
         for peer in peers:
+            cb = _peer_cb(peer)
             try:
-                await client.post(f"{peer}/internal/users/unlock", json={"email": email})
+                await cb.call(client.post, f"{peer}/internal/users/unlock", json={"email": email})
+            except CircuitBreakerOpenError:
+                logger.warning(f"[dist-lock] circuit OPEN for {peer} — skipping unlock")
             except Exception:
                 pass
 
@@ -244,13 +260,16 @@ async def replicate_user(user_data: dict):
 
     async with httpx.AsyncClient(timeout=4.0) as client:
         for peer in peers:
+            cb = _peer_cb(peer)
             try:
-                r = await client.post(f"{peer}/internal/users/replicate", json=user_data)
+                r = await cb.call(client.post, f"{peer}/internal/users/replicate", json=user_data)
                 logger.info(
                     f"[user-replication] PUSH user={user_data.get('id')} "
                     f"email={user_data.get('email')} shard={shard_id} "
                     f"→ {peer} (HTTP {r.status_code})"
                 )
+            except CircuitBreakerOpenError:
+                logger.warning(f"[user-replication] circuit OPEN for {peer} — skipping user push")
             except Exception as exc:
                 logger.warning(f"[user-replication] peer {peer} unreachable on user push: {exc}")
 
@@ -262,12 +281,15 @@ async def replicate_vehicle(vehicle_data: dict):
         return
     async with httpx.AsyncClient(timeout=4.0) as client:
         for peer in peers:
+            cb = _peer_cb(peer)
             try:
-                r = await client.post(f"{peer}/internal/vehicles/replicate", json=vehicle_data)
+                r = await cb.call(client.post, f"{peer}/internal/vehicles/replicate", json=vehicle_data)
                 logger.info(
                     f"[user-replication] PUSH vehicle={vehicle_data.get('registration')} "
                     f"user={vehicle_data.get('user_id')} → {peer} (HTTP {r.status_code})"
                 )
+            except CircuitBreakerOpenError:
+                logger.warning(f"[user-replication] circuit OPEN for {peer} — skipping vehicle push")
             except Exception as exc:
                 logger.warning(f"[user-replication] peer {peer} unreachable on vehicle push: {exc}")
 
@@ -283,8 +305,13 @@ async def sync_from_peer(peer_url: str, db_session_factory):
     from sqlalchemy import select
 
     try:
+        cb = _peer_cb(peer_url)
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(f"{peer_url}/internal/users/all")
+            try:
+                resp = await cb.call(client.get, f"{peer_url}/internal/users/all")
+            except CircuitBreakerOpenError:
+                logger.warning(f"[user-sync] circuit OPEN for {peer_url} — skipping catch-up sync")
+                return
             if resp.status_code != 200:
                 logger.warning(f"[user-sync] peer {peer_url} returned HTTP {resp.status_code}")
                 return

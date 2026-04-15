@@ -179,6 +179,11 @@ func replicateSlotToPeers(req ConflictCheckRequest, arrivalTime time.Time) {
 	for _, base := range peers {
 		base := base
 		go func() {
+			cb := getPeerCB(base)
+			if err := cb.Allow(); err != nil {
+				log.Printf("[replication] circuit OPEN for %s — skipping slot push", base)
+				return
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			r, err := http.NewRequestWithContext(ctx, http.MethodPost,
@@ -190,10 +195,12 @@ func replicateSlotToPeers(req ConflictCheckRequest, arrivalTime time.Time) {
 			r.Header.Set("Content-Type", "application/json")
 			resp, err := replicationClient.Do(r)
 			if err != nil {
+				cb.RecordFailure(err)
 				log.Printf("[replication] peer %s unreachable: %v", base, err)
 				return
 			}
 			resp.Body.Close()
+			cb.RecordSuccess()
 			log.Printf("[replication] PUSH slot=%s vehicle=%s route=%s depart=%s → peer=%s (HTTP %d)",
 				payload.JourneyID, payload.VehicleRegistration, payload.RouteID,
 				payload.DepartureTime.UTC().Format("15:04:05Z"), base, resp.StatusCode)
@@ -211,6 +218,11 @@ func replicateCancelToPeers(journeyID string) {
 	for _, base := range peers {
 		base := base
 		go func() {
+			cb := getPeerCB(base)
+			if err := cb.Allow(); err != nil {
+				log.Printf("[replication] circuit OPEN for %s — skipping cancel push", base)
+				return
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			r, err := http.NewRequestWithContext(ctx, http.MethodPost,
@@ -222,10 +234,12 @@ func replicateCancelToPeers(journeyID string) {
 			r.Header.Set("Content-Type", "application/json")
 			resp, err := replicationClient.Do(r)
 			if err != nil {
+				cb.RecordFailure(err)
 				log.Printf("[replication] cancel peer %s unreachable: %v", base, err)
 				return
 			}
 			resp.Body.Close()
+			cb.RecordSuccess()
 			log.Printf("[replication] CANCEL journey=%s → peer=%s (HTTP %d)", journeyID, base, resp.StatusCode)
 		}()
 	}
@@ -335,6 +349,11 @@ func getActiveSlots(ctx context.Context) ([]ReplicateSlotRequest, error) {
 //  1. Late-joining node: starts with an empty DB, pulls everything from peers.
 //  2. Rejoining after downtime: missed bookings during the gap are backfilled.
 func syncFromPeer(peerURL string) {
+	cb := getPeerCB(peerURL)
+	if err := cb.Allow(); err != nil {
+		log.Printf("[sync] circuit OPEN for %s — skipping catch-up sync", peerURL)
+		return
+	}
 	req, err := http.NewRequest(http.MethodGet, peerURL+"/internal/slots/active", nil)
 	if err != nil {
 		log.Printf("[sync] build request to %s: %v", peerURL, err)
@@ -342,10 +361,12 @@ func syncFromPeer(peerURL string) {
 	}
 	resp, err := syncClient.Do(req)
 	if err != nil {
+		cb.RecordFailure(err)
 		log.Printf("[sync] peer %s unreachable during catch-up: %v", peerURL, err)
 		return
 	}
 	defer resp.Body.Close()
+	cb.RecordSuccess()
 
 	var data struct {
 		Slots []ReplicateSlotRequest `json:"slots"`

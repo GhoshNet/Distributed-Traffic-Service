@@ -15,7 +15,14 @@ from typing import List
 
 import httpx
 
+from shared.circuit_breaker import get_circuit_breaker, CircuitBreakerOpenError
+
 logger = logging.getLogger(__name__)
+
+
+def _peer_cb(peer_url: str):
+    """Get-or-create a circuit breaker for a specific peer URL."""
+    return get_circuit_breaker(f"journey-peer:{peer_url}", failure_threshold=3, reset_timeout=30.0)
 
 # ── Peer management ────────────────────────────────────────────────────────────
 
@@ -56,8 +63,10 @@ async def replicate_journey(journey_data: dict):
         return
     async with httpx.AsyncClient(timeout=5.0) as client:
         for peer in peers:
+            cb = _peer_cb(peer)
             try:
-                r = await client.post(
+                r = await cb.call(
+                    client.post,
                     f"{peer}/internal/journeys/replicate",
                     json=journey_data,
                 )
@@ -65,6 +74,8 @@ async def replicate_journey(journey_data: dict):
                     f"[journey-replication] PUSH journey={journey_data.get('id')} "
                     f"status={journey_data.get('status')} → {peer} (HTTP {r.status_code})"
                 )
+            except CircuitBreakerOpenError:
+                logger.warning(f"[journey-replication] circuit OPEN for {peer} — skipping push")
             except Exception as exc:
                 logger.warning(
                     f"[journey-replication] peer {peer} unreachable on push: {exc}"
@@ -82,8 +93,13 @@ async def sync_from_peer(peer_url: str, db_session_factory):
     from sqlalchemy import select
 
     try:
+        cb = _peer_cb(peer_url)
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(f"{peer_url}/internal/journeys/all")
+            try:
+                resp = await cb.call(client.get, f"{peer_url}/internal/journeys/all")
+            except CircuitBreakerOpenError:
+                logger.warning(f"[journey-sync] circuit OPEN for {peer_url} — skipping catch-up sync")
+                return
             if resp.status_code != 200:
                 logger.warning(
                     f"[journey-sync] peer {peer_url} returned HTTP {resp.status_code}"

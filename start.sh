@@ -151,12 +151,52 @@ else
     rm -f .env
 fi
 
-# Step 2: Tear down existing stack
+# Step 2: Hard stop — kill every container related to this project
 echo ""
-info "── Stopping existing stack ───────────────────────────────────────"
+info "── Shutting down all existing containers ────────────────────────"
+
+# 2a. Compose-aware teardown (handles named volumes declared in compose files)
 $COMPOSE down --remove-orphans 2>/dev/null || true
 
+# 2b. Kill any surviving containers whose name contains a known service name.
+#     This catches containers started under a different project name, a previous
+#     swarm deploy, or a manual docker run — the root cause of duplicate containers.
+SERVICE_NAMES=(
+    "user-service"
+    "journey-service"
+    "conflict-service"
+    "enforcement-service"
+    "notification-service"
+    "analytics-service"
+    "api-gateway"
+    "frontend"
+    "rabbitmq"
+    "redis"
+    "postgres-users"
+    "postgres-journeys"
+    "postgres-conflicts"
+    "postgres-analytics"
+)
+
+KILLED=0
+for svc in "${SERVICE_NAMES[@]}"; do
+    # docker ps -q --filter name=<svc> returns IDs of all matching containers
+    CTRS=$(docker ps -aq --filter "name=$svc" 2>/dev/null || true)
+    if [ -n "$CTRS" ]; then
+        warn "Stopping duplicate containers for '$svc': $CTRS"
+        echo "$CTRS" | xargs docker rm -f 2>/dev/null || true
+        KILLED=1
+    fi
+done
+
+[ "$KILLED" -eq 0 ] && success "No stale containers found" || success "All stale containers removed"
+
+# 2c. Also remove any stopped containers from previous compose runs
+docker container prune -f --filter "label=com.docker.compose.project" 2>/dev/null || true
+
 # Step 3: Free ports that are commonly stuck
+echo ""
+info "── Freeing ports ─────────────────────────────────────────────────"
 free_port() {
     local port=$1
     local pids
@@ -172,7 +212,7 @@ free_port 6379
 free_port 8080
 free_port 8003
 
-sleep 1
+sleep 2
 
 # Step 4: Remove the RabbitMQ volume (cookie permission issue on re-runs)
 info "Removing stale RabbitMQ volume..."

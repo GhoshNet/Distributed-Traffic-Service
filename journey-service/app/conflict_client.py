@@ -117,21 +117,27 @@ async def resilient_conflict_cancel(
         urls = [preferred_url] + [u for u in urls if u != preferred_url]
 
     for url in urls:
+        cb = get_circuit_breaker(f"conflict-cancel:{url}", failure_threshold=3, reset_timeout=30.0)
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.post(
-                    f"{url}/api/conflicts/cancel/{journey_id}",
-                    headers=headers,
-                )
-                if resp.status_code in (204, 404):
-                    logger.info(
-                        f"[conflict-client] CANCEL journey={journey_id} "
-                        f"accepted by {url} (status={resp.status_code})"
+            async def _cancel(u=url):
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    return await client.post(
+                        f"{u}/api/conflicts/cancel/{journey_id}",
+                        headers=headers,
                     )
-                    return True
-                logger.warning(
-                    f"[conflict-client] CANCEL at {url} returned {resp.status_code}"
+
+            resp = await cb.call(_cancel)
+            if resp.status_code in (204, 404):
+                logger.info(
+                    f"[conflict-client] CANCEL journey={journey_id} "
+                    f"accepted by {url} (status={resp.status_code})"
                 )
+                return True
+            logger.warning(
+                f"[conflict-client] CANCEL at {url} returned {resp.status_code}"
+            )
+        except CircuitBreakerOpenError:
+            logger.warning(f"[conflict-client] circuit OPEN for {url} — skipping cancel, trying next")
         except Exception as e:
             logger.warning(f"[conflict-client] CANCEL at {url} failed: {e} — trying next")
 
