@@ -8,6 +8,7 @@ from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from passlib.context import CryptContext
 
 from .database import User
@@ -31,9 +32,10 @@ class UserService:
     async def register(db: AsyncSession, request: UserRegisterRequest) -> UserResponse:
         """Register a new user inside an atomic transaction.
 
-        All checks and the insert are wrapped in a single BEGIN/COMMIT block.
-        Any failure (validation or DB error) rolls back the entire transaction
-        so no partial state is left behind.
+        All checks, the INSERT, flush, and refresh are wrapped in a single
+        BEGIN/COMMIT block.  Any failure — including a DB error during flush or
+        the final refresh — rolls back the entire transaction so no partial state
+        is ever committed to the database.
         """
         user = None
         try:
@@ -52,7 +54,7 @@ class UserService:
                 if existing_license.scalar_one_or_none():
                     raise ValueError("License number already registered")
 
-                # Create user — all three operations are now one atomic unit
+                # Create user
                 user = User(
                     id=str(uuid.uuid4()),
                     email=request.email,
@@ -62,16 +64,31 @@ class UserService:
                     role=request.role.value if hasattr(request, "role") and request.role else "DRIVER",
                 )
                 db.add(user)
-                # Transaction commits here on successful exit; rolls back on any exception
+
+                # Flush inside the transaction so the INSERT hits the DB now.
+                # Refresh inside the transaction loads server-generated values
+                # (e.g. created_at).  Any error here rolls back before committing,
+                # preventing ghost rows that leave the email/license permanently
+                # "taken" even though the caller never received a success response.
+                await db.flush()
+                await db.refresh(user)
+                # Transaction commits here on normal exit; rolls back on any exception
 
         except ValueError:
-            # Re-raise validation errors (duplicate email/license) as-is
+            # Re-raise application-level validation errors as-is
             raise
+        except IntegrityError as e:
+            # DB-level unique constraint hit (e.g. concurrent double-submit).
+            # The transaction was rolled back — nothing was written.
+            logger.warning(f"Registration IntegrityError for {request.email}: {e}")
+            raise ValueError(
+                "Email or license number is already registered. "
+                "If you attempted to register before, please try logging in."
+            )
         except Exception as e:
             logger.error(f"Registration transaction failed for {request.email}: {e}")
-            raise RuntimeError("A problem occurred, you are not registered. Please try again.")
+            raise RuntimeError("A problem occurred. You have not been registered. Please try again.")
 
-        await db.refresh(user)
         logger.info(f"User registered: {user.id} ({user.email})")
 
         return UserResponse(

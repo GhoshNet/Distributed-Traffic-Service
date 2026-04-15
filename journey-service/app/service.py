@@ -204,9 +204,20 @@ class JourneyService:
 
         # Update status and write outbox event in the same transaction
         journey.status = JourneyStatus.CANCELLED.value
-        await BookingSaga.save_outbox_event(db, journey, EventType.JOURNEY_CANCELLED)
+        await BookingSaga.save_outbox_event(db, journey, EventType.JOURNEY_CANCELLED,
+                                            user_name="")
         await db.commit()
         await db.refresh(journey)
+
+        # Release the booking slot in the conflict service IMMEDIATELY (synchronous).
+        # The outbox/RabbitMQ path has a 2-4 second delay — without this direct call a
+        # re-booking attempt during that window is incorrectly rejected as a time overlap.
+        try:
+            from .conflict_client import resilient_conflict_cancel
+            await resilient_conflict_cancel(journey_id)
+        except Exception as e:
+            # Non-fatal: the async RabbitMQ event will clean up eventually.
+            logger.warning(f"Direct conflict cancel failed for {journey_id}: {e}")
 
         # Deduct points for cancellation
         try:

@@ -76,9 +76,13 @@ func createTables() error {
 			origin_lng           DOUBLE PRECISION NOT NULL,
 			destination_lat      DOUBLE PRECISION NOT NULL,
 			destination_lng      DOUBLE PRECISION NOT NULL,
+			route_id             VARCHAR(100),
 			is_active            BOOLEAN DEFAULT TRUE,
 			created_at           TIMESTAMP DEFAULT NOW()
 		);
+
+		-- Add route_id to existing tables that were created before this column existed.
+		ALTER TABLE booked_slots ADD COLUMN IF NOT EXISTS route_id VARCHAR(100);
 
 		CREATE INDEX IF NOT EXISTS idx_slot_user_time
 			ON booked_slots (user_id, departure_time, arrival_time);
