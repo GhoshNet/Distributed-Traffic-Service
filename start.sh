@@ -1,17 +1,18 @@
 #!/bin/bash
 # =============================================================================
-# start.sh — Clean start for the slim docker-compose stack
-#
-# Kills anything holding ports 3000, 6379, 8080, 8003 and removes stale
-# containers/volumes before bringing the stack up fresh.
+# start.sh — Start (or update) the slim docker-compose stack
 #
 # Usage:
-#   ./start.sh                        # standalone (no peers)
-#   ./start.sh <PEER_IP>              # one peer
-#   ./start.sh <PEER_IP1> <PEER_IP2>  # multiple peers
+#   ./start.sh                        # standalone, no peers — fresh start
+#   ./start.sh <PEER_IP> [IP2 ...]    # write .env for peers, full fresh start
+#   ./start.sh --update [IP ...]      # update .env + force-recreate (no teardown)
+#   ./start.sh --verify               # check replication status only
 #
-# Example:
+# Examples:
 #   ./start.sh 172.20.10.12
+#   ./start.sh 172.20.10.12 172.20.10.13
+#   ./start.sh --update 172.20.10.12
+#   ./start.sh --verify
 # =============================================================================
 set -e
 
@@ -22,7 +23,32 @@ warn()    { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 
 COMPOSE="docker compose -f docker-compose.yml -f docker-compose.slim.yml"
 
-# ── 1. Build peer lists from args ─────────────────────────────────────────────
+# ── Mode detection ────────────────────────────────────────────────────────────
+MODE="fresh"   # fresh | update | verify
+if [ "${1:-}" = "--update" ]; then
+    MODE="update"
+    shift
+elif [ "${1:-}" = "--verify" ]; then
+    MODE="verify"
+    shift
+fi
+
+# ── Step 0: Git — ensure we're on approach3 with latest code ─────────────────
+if [ "$MODE" != "verify" ]; then
+    echo ""
+    info "── Git setup ──────────────────────────────────────────────────"
+    CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "unknown")
+    if [ "$CURRENT_BRANCH" != "approach3" ]; then
+        info "Switching from '$CURRENT_BRANCH' to approach3..."
+        git checkout approach3
+    else
+        success "Already on approach3"
+    fi
+    git pull
+    success "Branch: $(git branch --show-current)  Commit: $(git rev-parse --short HEAD)"
+fi
+
+# ── Step 1: Build peer URL lists from args ────────────────────────────────────
 PEER_CONFLICT_URLS=""
 PEER_USER_URLS=""
 for ip in "$@"; do
@@ -30,6 +56,76 @@ for ip in "$@"; do
     PEER_USER_URLS="${PEER_USER_URLS:+$PEER_USER_URLS,}http://$ip:8080"
 done
 
+# ── VERIFY mode: show replication status and exit ─────────────────────────────
+if [ "$MODE" = "verify" ]; then
+    echo ""
+    info "── Conflict-service peer/sync log (last 15 lines) ──"
+    CONFLICT_CTR=$(docker ps --format '{{.Names}}' | grep -E 'conflict.service' | head -1 || true)
+    if [ -n "$CONFLICT_CTR" ]; then
+        docker logs "$CONFLICT_CTR" 2>&1 | grep -E "peer|sync|replication|PUSH|RECV" | tail -15 \
+            || warn "No peer/sync lines found yet"
+    else
+        warn "conflict-service container not found"
+    fi
+
+    echo ""
+    info "── User-service peer/sync log (last 15 lines) ──"
+    USER_CTR=$(docker ps --format '{{.Names}}' | grep -E 'user.service' | head -1 || true)
+    if [ -n "$USER_CTR" ]; then
+        docker logs "$USER_CTR" 2>&1 | grep -E "peer|sync|replication|dist-lock" | tail -15 \
+            || warn "No peer/sync lines found yet"
+    else
+        warn "user-service container not found"
+    fi
+
+    echo ""
+    info "── Active booked_slots (conflicts DB) ──"
+    PG_CTR=$(docker ps --format '{{.Names}}' | grep -E 'postgres.conflicts' | head -1 || true)
+    if [ -n "$PG_CTR" ]; then
+        docker exec "$PG_CTR" psql -U conflicts_user -d conflicts_db \
+            -c "SELECT COUNT(*) AS active_slots FROM booked_slots WHERE is_active=true;" 2>/dev/null \
+            || warn "Could not query conflicts DB"
+    else
+        warn "postgres-conflicts container not found"
+    fi
+
+    echo ""
+    info "── Running containers ──"
+    docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+    exit 0
+fi
+
+# ── UPDATE mode: write .env + force-recreate peer-aware services only ─────────
+if [ "$MODE" = "update" ]; then
+    echo ""
+    info "── Update mode — force-recreate (no teardown) ────────────────"
+    if [ -n "$PEER_CONFLICT_URLS" ]; then
+        cat > .env <<EOF
+PEER_CONFLICT_URLS=$PEER_CONFLICT_URLS
+PEER_USER_URLS=$PEER_USER_URLS
+EOF
+        success ".env updated:"
+        echo "  PEER_CONFLICT_URLS=$PEER_CONFLICT_URLS"
+        echo "  PEER_USER_URLS=$PEER_USER_URLS"
+    else
+        info "No IPs given — keeping existing .env:"
+        [ -f .env ] && cat .env || echo "  (empty)"
+    fi
+
+    info "Force-recreating conflict-service, user-service, journey-service..."
+    $COMPOSE up -d --no-build --force-recreate conflict-service user-service journey-service
+    success "Services restarted with new peer config"
+
+    echo ""
+    info "Waiting 10s for services to settle..."
+    sleep 10
+    ./start.sh --verify
+    exit 0
+fi
+
+# ── FRESH mode: write .env, tear down, free ports, start ──────────────────────
+
+# Step 1 cont.: write / clear .env
 if [ -n "$PEER_CONFLICT_URLS" ]; then
     info "Peers: $PEER_CONFLICT_URLS"
     cat > .env <<EOF
@@ -42,11 +138,12 @@ else
     rm -f .env
 fi
 
-# ── 2. Tear down existing stack ───────────────────────────────────────────────
-info "Stopping existing stack..."
+# Step 2: Tear down existing stack
+echo ""
+info "── Stopping existing stack ───────────────────────────────────────"
 $COMPOSE down --remove-orphans 2>/dev/null || true
 
-# ── 3. Free ports that are commonly stuck ─────────────────────────────────────
+# Step 3: Free ports that are commonly stuck
 free_port() {
     local port=$1
     local pids
@@ -62,20 +159,24 @@ free_port 6379
 free_port 8080
 free_port 8003
 
-# Short wait for OS to release ports
 sleep 1
 
-# ── 4. Remove the RabbitMQ volume (cookie permission issue on re-runs) ─────────
+# Step 4: Remove the RabbitMQ volume (cookie permission issue on re-runs)
 info "Removing stale RabbitMQ volume..."
 docker volume rm excercise2_rabbitmq_data 2>/dev/null && \
     success "Removed excercise2_rabbitmq_data" || \
     info "Volume didn't exist — nothing to remove"
 
-# ── 5. Start the stack ────────────────────────────────────────────────────────
-info "Starting stack..."
+# Step 5: Build peer-aware services and start the stack
+echo ""
+info "── Building conflict-service and journey-service ────────────────"
+$COMPOSE build conflict-service journey-service
+
+echo ""
+info "── Starting stack ────────────────────────────────────────────────"
 $COMPOSE up -d
 
-# ── 6. Wait and health-check ──────────────────────────────────────────────────
+# Step 6: Wait and health-check
 echo ""
 info "Waiting for gateway to become healthy..."
 for i in $(seq 1 24); do
@@ -89,7 +190,7 @@ for i in $(seq 1 24); do
 done
 echo ""
 
-# ── 7. Summary ────────────────────────────────────────────────────────────────
+# Step 7: Summary
 echo ""
 echo "============================================="
 echo -e " ${GREEN}Stack is up${NC}"
@@ -102,7 +203,10 @@ if [ -n "$PEER_CONFLICT_URLS" ]; then
     echo ""
     echo "  Peers configured: $*"
     echo ""
-    echo "  To verify replication:"
-    echo "    docker logs \$(docker ps -qf 'name=conflict-service') 2>&1 | grep -E 'sync|peer' | tail -5"
+    echo "  Next: register peers live (triggers catch-up sync):"
+    echo "    ./register_peers.sh $*"
 fi
+echo ""
+echo "  Verify replication anytime:"
+echo "    ./start.sh --verify"
 echo ""
