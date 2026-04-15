@@ -45,7 +45,7 @@ if [ "$MODE" != "verify" ]; then
     else
         success "Already on approach3"
     fi
-    git pull
+    # git pull -- skip during demo to avoid merge conflicts with local fixes
     success "Branch: $(git branch --show-current)  Commit: $(git rev-parse --short HEAD)"
 fi
 

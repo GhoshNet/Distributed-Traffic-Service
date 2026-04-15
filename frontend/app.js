@@ -249,19 +249,30 @@ async function loadPeerAPIs() {
             const fresh = Object.values(data.laptop_peers || {})
                 .filter(p => p.status === 'ALIVE' && p.ping_url)
                 .map(p => p.ping_url.replace(/\/health.*$/, ''));
-            // Merge: keep peers from all sources, deduplicate, exclude self
-            const merged = [...new Set([...fresh, ...cached])].filter(p => p !== API);
+            // Merge: keep fresh peers, cached peers, and exclude self
+            const merged = [...new Set([...fresh, ...cached])].filter(p => p && p !== API);
             activePeerAPIs = merged;
             localStorage.setItem('jb_peers', JSON.stringify(activePeerAPIs));
-            if (activePeerAPIs.length > 0)
-                console.info('[failover] peer nodes:', activePeerAPIs, '(via', base, ')');
+            
+            if (activePeerAPIs.length > 0) {
+                console.info('[failover] discovered cluster peers:', activePeerAPIs);
+                updateFailoverIndicator();
+            }
             return;
         } catch(e) {
-            console.warn(`[failover] could not load peer list from ${base}:`, e.message);
+            // If primary is down, we don't give up — we keep trying other cached bases
+            console.warn(`[failover] discovery attempt failed at ${base}:`, e.message);
         }
     }
-    // All nodes unreachable — keep whatever is cached in localStorage
-    console.warn('[failover] all nodes unreachable for peer list — using cached peers:', cached);
+}
+
+// updateFailoverIndicator — shows how many peers are in the failover cache
+function updateFailoverIndicator() {
+    const el = document.getElementById('peer-count-tag');
+    if (!el) return;
+    const count = activePeerAPIs.length;
+    el.innerHTML = count > 0 ? `🔗 Cluster: ${count} peers` : '📍 Standalone';
+    el.style.opacity = count > 0 ? '1' : '0.5';
 }
 
 // setActiveNode — updates the topbar indicator when failover switches nodes.
@@ -799,7 +810,11 @@ function startNodeHealthPolling() {
     loadNodeHealth();
     loadSimStats();
     loadActivityFeed();
-    _nodeHealthTimer = setInterval(() => { loadNodeHealth(); loadSimStats(); }, 10000);
+    _nodeHealthTimer = setInterval(() => { 
+        loadNodeHealth(); 
+        loadSimStats(); 
+        loadPeerAPIs(); // Periodic discovery of new cluster members
+    }, 10000);
     _activityTimer   = setInterval(() => loadActivityFeed(), 5000);
 }
 

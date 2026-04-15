@@ -9,7 +9,7 @@ import jwt
 from fastapi import HTTPException, Security, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-_DEFAULT_SECRET = "super-secret-jwt-key-change-in-production"
+_DEFAULT_SECRET = "keefkfwjNBEFINoodwoedibIOEJFKWNFIjjjdIIIOOP"
 JWT_SECRET = os.getenv("JWT_SECRET", _DEFAULT_SECRET)
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 24
@@ -46,7 +46,8 @@ def create_access_token(user_id: str, email: str, license_number: str, role: str
 def decode_token(token: str) -> dict:
     """Decode and validate a JWT token."""
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        # Add leeway=300 (5 mins) to handle clock skew between different laptops
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM], leeway=300)
         return payload
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token has expired")

@@ -79,6 +79,6 @@ class Settings:
         "amqp://journey_admin:journey_pass@rabbitmq:5672/journey_vhost",
     )
     JWT_SECRET: str = os.getenv(
-        "JWT_SECRET", "super-secret-jwt-key-change-in-production"
+        "JWT_SECRET", "keefkfwjNBEFINoodwoedibIOEJFKWNFIjjjdIIIOOP"
     )
     DEBUG: bool = os.getenv("DEBUG", "false").lower() == "true"
