@@ -26,6 +26,9 @@ let predefinedRoutes = [];
 let roadNetworkLayer = null;
 let roadNetworkVisible = true;
 
+// Map mode: 'routes' = show all predefined routes, 'journeys' = show user's journeys only
+let mapMode = 'routes';
+
 // Route colour palette (one per predefined route)
 const ROUTE_COLORS = ['#00b4d8', '#f77f00', '#06d6a0', '#e63946', '#8338ec', '#ffbe0b'];
 
@@ -127,16 +130,15 @@ function go(view) {
   document.getElementById(`view-${view}`).classList.add('active');
   document.getElementById(`nav-${view}`).classList.add('active');
 
-  // Stop health polling when leaving simulate/dash
-  if (view !== 'simulate' && view !== 'dash') stopNodeHealthPolling();
+  // Stop health polling when leaving simulate
+  if (view !== 'simulate') stopNodeHealthPolling();
 
   if(view === 'map') {
     setTimeout(() => mapInstance.invalidateSize(), 300);
     loadJourneys();
   }
-  if(view === 'dash') { loadDashboard(); startNodeHealthPolling(); }
   if(view === 'journeys') { loadJourneys(); loadVehicles(); if(predefinedRoutes.length === 0) loadPredefinedRoutes(); }
-  if(view === 'simulate') startNodeHealthPolling();
+  if(view === 'simulate') { loadDashboard(); startNodeHealthPolling(); }
 }
 
 function initMap() {
@@ -242,9 +244,11 @@ async function loadPeerAPIs() {
             });
             if (!r.ok) continue;
             const data = await r.json();
-            const fresh = Object.values(data.peers || {})
-                .filter(p => p.status === 'ALIVE' && p.health_url)
-                .map(p => p.health_url.replace(/\/health.*$/, ''));
+            // laptop_peers = dynamically-registered remote machines
+            // data.peers = internal microservices — NOT useful as API failover bases
+            const fresh = Object.values(data.laptop_peers || {})
+                .filter(p => p.status === 'ALIVE' && p.ping_url)
+                .map(p => p.ping_url.replace(/\/health.*$/, ''));
             // Merge: keep peers from all sources, deduplicate, exclude self
             const merged = [...new Set([...fresh, ...cached])].filter(p => p !== API);
             activePeerAPIs = merged;
@@ -486,18 +490,36 @@ async function loadJourneys() {
             list.innerHTML = journeys.map(j => renderJourneyItem(j)).join('');
         }
 
-        // Update map with confirmed/in-progress journeys
+        // Update map only when in 'journeys' mode
         try {
-            layerGroup.clearLayers();
-            journeys.forEach(j => {
-                if((j.status === "CONFIRMED" || j.status === "IN_PROGRESS") && j.origin_lat) {
-                    const org = [j.origin_lat, j.origin_lng];
-                    const dst = [j.destination_lat, j.destination_lng];
-                    L.polyline([org, dst], {color: '#8a2be2', weight: 3, opacity: 0.7, dashArray: '5,10'}).addTo(layerGroup);
-                    L.circleMarker(org, {radius:6, color:'#00e676', fillOpacity:1}).bindPopup(`Origin: ${j.origin}`).addTo(layerGroup);
-                    L.circleMarker(dst, {radius:6, color:'#ff1744', fillOpacity:1}).bindPopup(`Dest: ${j.destination}`).addTo(layerGroup);
-                }
-            });
+            if (mapMode === 'journeys') {
+                layerGroup.clearLayers();
+                const statusColors = { CONFIRMED: '#06d6a0', IN_PROGRESS: '#00b4d8', PENDING: '#ffbe0b', CANCELLED: '#888', REJECTED: '#e63946' };
+                let journeyLegendHtml = '';
+                journeys.forEach(j => {
+                    if (j.origin_lat) {
+                        const color = statusColors[j.status] || '#888';
+                        const org = [j.origin_lat, j.origin_lng];
+                        const dst = [j.destination_lat, j.destination_lng];
+                        const dep = j.departure_time ? new Date(j.departure_time).toLocaleString() : '';
+                        L.polyline([org, dst], { color, weight: 3, opacity: 0.8, dashArray: j.status === 'CONFIRMED' ? null : '6,8' })
+                            .bindPopup(`<strong>${j.origin} → ${j.destination}</strong><br>${dep}<br><span style="color:${color}">${j.status}</span>`)
+                            .addTo(layerGroup);
+                        L.circleMarker(org, { radius: 6, color, fillColor: '#00e676', fillOpacity: 1 })
+                            .bindPopup(`<strong>Origin</strong><br>${j.origin}`).addTo(layerGroup);
+                        L.circleMarker(dst, { radius: 6, color, fillColor: '#ff1744', fillOpacity: 1 })
+                            .bindPopup(`<strong>Dest</strong><br>${j.destination}`).addTo(layerGroup);
+                        journeyLegendHtml += `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12px">
+                            <div style="width:28px;height:3px;background:${color};border-radius:2px;flex-shrink:0"></div>
+                            <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${j.origin} → ${j.destination}</span>
+                            <span style="color:${color};font-size:11px;flex-shrink:0">${j.status}</span>
+                        </div>`;
+                    }
+                });
+                const legendEl = document.getElementById('map-legend');
+                if (legendEl) legendEl.innerHTML = journeyLegendHtml
+                    || '<div style="color:var(--text-muted);font-size:12px">No journeys with location data.</div>';
+            }
         } catch(mapErr) {
             console.warn('Map update failed:', mapErr);
         }
@@ -592,49 +614,15 @@ async function loadDashboard() {
     loadNodeHealth();
 
     // Load analytics stats
-    const r = await authFetch('/api/analytics/stats');
-    if(r.ok) {
-        const s = await r.json();
-        document.getElementById('stat-total').innerText = s.total_events_today || 0;
-        document.getElementById('stat-conf').innerText = s.confirmed_today || 0;
-        document.getElementById('stat-rej').innerText = s.rejected_today || 0;
-    }
-
-    // Load points balance
     try {
-        const pr = await authFetch('/api/journeys/points/balance');
-        if(pr.ok) {
-            const pts = await pr.json();
-            document.getElementById('stat-points').innerText = pts.balance || 0;
+        const r = await authFetch('/api/analytics/stats');
+        if(r.ok) {
+            const s = await r.json();
+            document.getElementById('stat-total').innerText = s.total_events_today || 0;
+            document.getElementById('stat-conf').innerText = s.confirmed_today || 0;
+            document.getElementById('stat-rej').innerText = s.rejected_today || 0;
         }
-    } catch(e) { console.warn('Points fetch failed:', e); }
-
-    // Load points history
-    try {
-        const hr = await authFetch('/api/journeys/points/history?limit=10');
-        if(hr.ok) {
-            const data = await hr.json();
-            const list = document.getElementById('points-history');
-            if(data.transactions && data.transactions.length > 0) {
-                list.innerHTML = data.transactions.map(t => {
-                    const isPositive = t.amount > 0;
-                    const color = isPositive ? 'var(--success)' : 'var(--danger)';
-                    const sign = isPositive ? '+' : '';
-                    const reasonLabel = t.reason.replace(/_/g, ' ');
-                    const date = t.created_at ? new Date(t.created_at).toLocaleString() : '';
-                    return `<div class="data-item">
-                        <div>
-                            <div style="font-weight:600;font-size:14px">${reasonLabel}</div>
-                            <div style="font-size:12px;color:var(--text-muted)">${date}</div>
-                        </div>
-                        <div style="font-weight:700;font-size:16px;color:${color}">${sign}${t.amount}</div>
-                    </div>`;
-                }).join('');
-            } else {
-                list.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:16px;">No points history yet.</div>';
-            }
-        }
-    } catch(e) { console.warn('Points history fetch failed:', e); }
+    } catch(e) { console.warn('Stats fetch failed:', e); }
 }
 
 // =============================================
@@ -660,7 +648,7 @@ function renderRoadNetwork() {
     if (roadNetworkLayer) roadNetworkLayer.remove();
 
     roadNetworkLayer = L.layerGroup();
-    const legendEl = document.getElementById('route-legend');
+    const legendEl = document.getElementById('map-legend');
     if (legendEl) legendEl.innerHTML = '';
 
     predefinedRoutes.forEach((route, idx) => {
@@ -713,6 +701,41 @@ function toggleRoadNetwork() {
     } else {
         roadNetworkLayer.remove();
         showToast('Road network hidden', 'info');
+    }
+}
+
+// ── Map mode toggle ───────────────────────────────────────────────────────────
+// 'routes'   → predefined road network (default)
+// 'journeys' → user's own booked routes
+function setMapMode(mode) {
+    mapMode = mode;
+
+    // Update button styles
+    const btnRoutes   = document.getElementById('btn-mode-routes');
+    const btnJourneys = document.getElementById('btn-mode-journeys');
+    if (btnRoutes && btnJourneys) {
+        const activeStyle   = 'background:var(--primary);color:#fff';
+        const inactiveStyle = 'background:transparent;color:var(--text-muted)';
+        btnRoutes.style.cssText   = mode === 'routes'   ? activeStyle : inactiveStyle;
+        btnJourneys.style.cssText = mode === 'journeys' ? activeStyle : inactiveStyle;
+        // Keep btn-primary class on active one for border-radius etc.
+        btnRoutes.className   = `btn btn-sm${mode === 'routes'   ? ' btn-primary' : ''}`;
+        btnJourneys.className = `btn btn-sm${mode === 'journeys' ? ' btn-primary' : ''}`;
+    }
+
+    if (mode === 'routes') {
+        // Show road network, clear journey markers
+        layerGroup.clearLayers();
+        roadNetworkVisible = true;
+        if (roadNetworkLayer) roadNetworkLayer.addTo(mapInstance);
+        else loadPredefinedRoutes();  // fallback if not loaded yet
+        // Re-render legend from road network
+        renderRoadNetwork();
+    } else {
+        // Hide road network, load and display user journeys
+        if (roadNetworkLayer) roadNetworkLayer.remove();
+        layerGroup.clearLayers();
+        loadJourneys();  // will redraw markers + legend when mode === 'journeys'
     }
 }
 
@@ -870,42 +893,58 @@ async function loadNodeHealth() {
         const r = await authFetch('/health/nodes');
         if (!r.ok) return;
         const data = await r.json();
-        const peers = data.peers || {};
-        const total = Object.keys(peers).length;
-        const alive = Object.values(peers).filter(p => p.status === 'ALIVE').length;
+
+        // ── Laptop peers (other physical machines on the network) ──────────
+        const laptopPeers = data.laptop_peers || {};
+        const laptopTotal = Object.keys(laptopPeers).length;
+        const laptopAlive = Object.values(laptopPeers).filter(p => p.status === 'ALIVE').length;
+
+        // ── Internal microservices ─────────────────────────────────────────
+        const services = data.peers || {};
+        const svcAlive = Object.values(services).filter(p => p.status === 'ALIVE').length;
+        const svcTotal = Object.keys(services).length;
 
         // LOCAL ONLY badge
         const badge = document.getElementById('local-only-badge');
         if (badge) badge.style.display = data.local_only_mode ? 'inline-block' : 'none';
 
-        // Peer count label
-        const countLabel = document.getElementById('dash-node-count');
-        if (countLabel) countLabel.textContent = `${alive}/${total} alive`;
-
+        // Laptop count label
         const simCount = document.getElementById('sim-node-count');
-        if (simCount) simCount.textContent = `${alive}/${total} alive`;
+        if (simCount) simCount.textContent = laptopTotal > 0
+            ? `${laptopAlive}/${laptopTotal} alive`
+            : 'none registered';
 
-        // Render peer cards into both dash and simulate grids
-        const html = Object.entries(peers).map(([name, info]) => {
-            const colors = {ALIVE: '#06d6a0', SUSPECT: '#ffbe0b', DEAD: '#e63946'};
+        // ── Helper: build a health card ────────────────────────────────────
+        function buildCard(name, info) {
+            const colors = { ALIVE: '#06d6a0', SUSPECT: '#ffbe0b', DEAD: '#e63946' };
             const c = colors[info.status] || '#888';
             const lastSeen = info.last_seen_s_ago < 60
                 ? `${info.last_seen_s_ago}s ago`
-                : `${Math.round(info.last_seen_s_ago/60)}m ago`;
+                : `${Math.round(info.last_seen_s_ago / 60)}m ago`;
             return `<div style="background:var(--card-bg);border:2px solid ${c};border-radius:8px;padding:12px">
                 <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;word-break:break-all">${name}</div>
                 <div style="font-weight:700;color:${c};font-size:15px;margin-bottom:4px">${info.status}</div>
                 <div style="font-size:11px;color:var(--text-muted)">seen ${lastSeen}</div>
                 ${info.consecutive_failures > 0
-                    ? `<div style="font-size:11px;color:var(--danger);margin-top:2px">${info.consecutive_failures} missed ping${info.consecutive_failures>1?'s':''}</div>`
+                    ? `<div style="font-size:11px;color:var(--danger);margin-top:2px">${info.consecutive_failures} missed ping${info.consecutive_failures > 1 ? 's' : ''}</div>`
                     : ''}
             </div>`;
-        }).join('') || '<div style="color:var(--text-muted);font-size:13px">No peers registered yet.</div>';
+        }
 
-        ['node-health-grid', 'sim-node-health-grid'].forEach(id => {
-            const el = document.getElementById(id);
-            if (el) el.innerHTML = html;
-        });
+        // ── Laptop peers grid ──────────────────────────────────────────────
+        const laptopHtml = Object.entries(laptopPeers).map(([name, info]) => buildCard(name, info)).join('')
+            || '<div style="color:var(--text-muted);font-size:13px">No laptops registered yet. Use the form below to add a teammate\'s node.</div>';
+
+        // ── Internal services grid ─────────────────────────────────────────
+        const svcHtml = Object.entries(services).map(([name, info]) => buildCard(name, info)).join('')
+            || '<div style="color:var(--text-muted);font-size:13px">No internal services detected.</div>';
+
+        const laptopGrid = document.getElementById('sim-node-health-grid');
+        if (laptopGrid) laptopGrid.innerHTML = laptopHtml;
+
+        const svcGrid = document.getElementById('sim-svc-grid');
+        if (svcGrid) svcGrid.innerHTML = svcHtml;
+
     } catch(err) {
         console.warn('Node health fetch failed:', err);
     }
@@ -919,10 +958,11 @@ async function loadSimStats() {
     try {
         const r = await authFetch('/admin/simulate/status');
         const data = r.ok ? await r.json() : {};
-        const peers = Object.values(data.peers || {});
-        const alive = peers.filter(p => p.status === 'ALIVE').length;
-        const suspect = peers.filter(p => p.status === 'SUSPECT').length;
-        const dead = peers.filter(p => p.status === 'DEAD').length;
+        // data.peers = laptop peer statuses only (not internal services)
+        const laptopPeers = Object.values(data.peers || {});
+        const alive = laptopPeers.filter(p => p.status === 'ALIVE').length;
+        const suspect = laptopPeers.filter(p => p.status === 'SUSPECT').length;
+        const dead = laptopPeers.filter(p => p.status === 'DEAD').length;
 
         const selfEl = document.getElementById('sim-self-status');
         if (selfEl) selfEl.innerHTML = data.node_failed

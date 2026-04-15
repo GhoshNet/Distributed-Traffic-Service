@@ -121,6 +121,7 @@ class PeerHealthMonitor:
                     "status": peer.status.value,
                     "consecutive_failures": peer.consecutive_failures,
                     "last_seen_s_ago": round(time.monotonic() - peer.last_seen, 1),
+                    "ping_url": peer.ping_url,  # included so frontend can derive API base
                 }
                 for name, peer in self._peers.items()
             },

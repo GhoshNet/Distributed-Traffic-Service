@@ -32,8 +32,12 @@ logger = logging.getLogger(__name__)
 # Global partition manager instance
 partition_mgr = PartitionManager("journey-service")
 
-# Global peer health monitor (Archive-style ALIVE/SUSPECT/DEAD)
+# Internal microservice health monitor (conflict-service, user-service, etc.)
 health_monitor = PeerHealthMonitor("journey-service")
+
+# Laptop peer health monitor — tracks dynamically-registered remote nodes
+# (other physical machines / teammates' laptops on the same network)
+laptop_monitor = PeerHealthMonitor("journey-service-laptops")
 
 # Node failure simulation flag — mirrors Archive's state.failure_simulated
 # When True: /health returns 503 so peers detect this node as DEAD
@@ -81,7 +85,7 @@ async def lifespan(app: FastAPI):
     await partition_mgr.start()
     logger.info("Partition manager started")
 
-    # Register peer services with health monitor (Archive ALIVE/SUSPECT/DEAD model)
+    # Register internal microservices with the service health monitor
     health_monitor.register(
         "conflict-service", conflict_url + "/health"
     )
@@ -102,13 +106,18 @@ async def lifespan(app: FastAPI):
         os.getenv("ANALYTICS_SERVICE_URL", "http://analytics-service:8000") + "/health",
     )
     await health_monitor.start()
-    logger.info("Peer health monitor started")
+    logger.info("Internal service health monitor started")
+
+    # Start the laptop peer monitor (starts empty; peers added via /admin/peers/register)
+    await laptop_monitor.start()
+    logger.info("Laptop peer health monitor started")
 
     yield
 
     logger.info("Journey Service shutting down...")
     await partition_mgr.stop()
     await health_monitor.stop()
+    await laptop_monitor.stop()
     await close_broker()
 
 
@@ -154,9 +163,21 @@ async def partition_status():
 async def node_health():
     """
     Per-peer liveness status using Archive's ALIVE/SUSPECT/DEAD model.
-    Surfaces the health monitor state for the frontend dashboard.
+    Returns two separate groups:
+      - 'services': internal microservices (conflict-, user-, notification-, enforcement-, analytics-service)
+      - 'laptop_peers': dynamically-registered remote laptops (other machines on the same LAN)
+      - 'local_only_mode': True when too many internal services are unreachable
     """
-    return health_monitor.get_status()
+    svc_status    = health_monitor.get_status()
+    laptop_status = laptop_monitor.get_status()
+    return {
+        "monitor": svc_status["monitor"],
+        "local_only_mode": svc_status["local_only_mode"],
+        # Keep the legacy 'peers' key pointing at services so existing callers don't break
+        "peers": svc_status["peers"],
+        # New key: real remote-machine peers (laptops / nodes on the LAN)
+        "laptop_peers": laptop_status["peers"],
+    }
 
 
 @app.post("/admin/simulate/fail")
@@ -208,46 +229,52 @@ async def simulate_node_recover():
 @app.get("/admin/simulate/status")
 async def simulate_status():
     """Return current simulation state of this node."""
-    peers = health_monitor.get_status()
-    alive = sum(1 for p in peers["peers"].values() if p["status"] == "ALIVE")
-    total = len(peers["peers"])
+    svc_status    = health_monitor.get_status()
+    laptop_status = laptop_monitor.get_status()
+    # Count both internal services AND laptop peers for summary stats
+    all_peers = {**svc_status["peers"], **laptop_status["peers"]}
+    alive = sum(1 for p in all_peers.values() if p["status"] == "ALIVE")
+    total = len(all_peers)
     return {
         "node_failed": _node_failed,
-        "local_only_mode": peers["local_only_mode"],
+        "local_only_mode": svc_status["local_only_mode"],
         "alive_peers": alive,
         "total_peers": total,
-        "peers": peers["peers"],
+        # Separate keys so the frontend can show laptop peers vs services
+        "peers": laptop_status["peers"],
+        "services": svc_status["peers"],
     }
 
 
 @app.post("/admin/peers/register")
 async def register_peer(payload: dict):
     """
-    Dynamically register a remote peer node to monitor.
+    Dynamically register a remote LAPTOP/NODE to monitor.
 
     Useful when teammates run the stack on their own machines on the same
-    LAN/hotspot. POST the peer's journey-service /health URL and it will
-    appear in /health/nodes within one heartbeat cycle (~10 s).
+    LAN/hotspot. POST the peer's /health URL and it will appear in
+    /health/nodes under 'laptop_peers' within one heartbeat cycle (~10 s).
 
-    Body: {"name": "peer-alice", "health_url": "http://192.168.1.42:8080/health/nodes"}
+    Body: {"name": "alice-laptop", "health_url": "http://192.168.1.42:8080/health"}
     """
     name = payload.get("name")
     health_url = payload.get("health_url")
     if not name or not health_url:
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail="Both 'name' and 'health_url' are required")
-    health_monitor.register(name, health_url)
+    # Register into the LAPTOP monitor, NOT the internal-services monitor
+    laptop_monitor.register(name, health_url)
     return {"registered": name, "health_url": health_url,
-            "note": "Will appear in /health/nodes within 10 seconds"}
+            "note": "Will appear in /health/nodes laptop_peers within 10 seconds"}
 
 
 @app.delete("/admin/peers/{name}")
 async def unregister_peer(name: str):
-    """Remove a dynamically registered peer from health monitoring."""
-    if name not in health_monitor._peers:
+    """Remove a dynamically registered laptop peer from health monitoring."""
+    if name not in laptop_monitor._peers:
         from fastapi import HTTPException
-        raise HTTPException(status_code=404, detail=f"Peer '{name}' not found")
-    del health_monitor._peers[name]
+        raise HTTPException(status_code=404, detail=f"Laptop peer '{name}' not found")
+    del laptop_monitor._peers[name]
     return {"unregistered": name}
 
 
