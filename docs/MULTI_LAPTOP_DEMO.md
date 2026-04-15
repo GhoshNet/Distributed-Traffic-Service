@@ -5,215 +5,129 @@
 
 ## Before You Start
 
-> Run this on **both laptops** to get your IPs, then fill them in below.
+Run this on **every laptop** to get your IP:
 
 ```bash
 ipconfig getifaddr en0
 ```
 
-Write them down:
-- **Your laptop (A):** `_______________` (e.g. `172.20.10.10`)
-- **Peer laptop (B):**  `_______________` (e.g. `172.20.10.12`)
+Share all IPs with the group and write them down:
+- **Laptop A:** `_______________`
+- **Laptop B:** `_______________`
+- **Laptop C:** `_______________` *(if applicable)*
 
-**Requirements on both machines:**
+**Requirements on every machine:**
 - Docker Desktop installed and running
-- Both laptops on the **same Wi-Fi / hotspot**
-- macOS Firewall off, or ports **8003** and **8080** allowed
+- All laptops on the **same Wi-Fi / hotspot**
+- macOS Firewall off, or ports **3000**, **8003**, and **8080** allowed
+- Repository cloned and on branch `approach3`
+
+```bash
+git checkout approach3 && git pull
+```
 
 ---
 
 ## Understanding the UI Indicators
 
-Before you start testing, know what the two topbar indicators mean:
-
 | Indicator | What it means | Does it affect bookings? |
 |-----------|--------------|--------------------------|
-| `● Live Data` (green dot) | WebSocket connection for push notifications (toasts + live map). Goes grey while reconnecting. | **No.** Bookings work whether this is green or grey. |
-| `🟢 Primary` | Your own backend node is handling your requests. Each user sees their **own** node as Primary — this is correct, not shared. | Yes — switches to `⚡ Failover: <peer-ip>` when your node is down and requests are routed to the peer. |
+| `● Live Data` (green dot) | WebSocket connection for push notifications. Goes grey while reconnecting. | **No.** Bookings work whether green or grey. |
+| `🟢 Primary` | Your own backend is handling requests. Each user sees their **own** node as Primary — this is correct. | Yes — switches to `⚡ Failover: <peer-ip>` when your node is down. |
 
-**If the Quick Route dropdown is empty:** The routes failed to load at login (conflict-service wasn't ready yet). Fix: click away to another tab and back to **Journeys** — it retries automatically
-
----
-
-## LAPTOP A — Your Machine (stack already running)
-
-### Step 1 — Stop anything on port 8080
-```bash
-docker stop excercise2-haproxy-1 2>/dev/null; true
-```
-> Stops HAProxy if it grabbed port 8080 (happens in full mode).
+**If the Quick Route dropdown is empty:** Conflict-service wasn't ready at login. Fix: click away to another tab and back to **Journeys** — it retries automatically.
 
 ---
 
-### Step 2 — Write the peer URLs into the .env file
+## Setup — Every Laptop (same steps, different IPs)
+
+### Step 1 — Start the stack with peers
+
+Run `start.sh` with the IPs of **all other laptops** as arguments:
+
 ```bash
-cat > /Users/tanmay/Documents/TCD_Course_Material/DS/Excercise2/.env <<EOF
-PEER_CONFLICT_URLS=http://<LAPTOP_B_IP>:8003
-PEER_USER_URLS=http://<LAPTOP_B_IP>:8080
-EOF
+# 2 laptops — Laptop A runs this (replace with Laptop B's actual IP):
+./start.sh <LAPTOP_B_IP>
+
+# 3 laptops — Laptop A runs this:
+./start.sh <LAPTOP_B_IP> <LAPTOP_C_IP>
+
+# Standalone (no peers, single-node testing):
+./start.sh
 ```
-> Replace `<LAPTOP_B_IP>` with Laptop B's actual IP.  
-> Docker Compose loads `.env` automatically on every `docker compose` command — so you only set this once.
+
+> `start.sh` handles everything: tears down stale containers, frees conflicting ports,
+> clears the RabbitMQ volume, writes `.env` with peer URLs, builds if needed, and starts
+> the stack. It waits until the gateway is healthy before returning.
+
+The script prints when it's ready:
+```
+[OK]    Gateway healthy (HTTP 200) after 30s
+```
 
 ---
 
-### Step 3 — Restart services with the new peer URLs
+### Step 2 — Register peers (once all laptops are up)
+
+Wait until **every laptop** has finished `start.sh`, then run on each machine:
+
 ```bash
-docker compose \
-  -f /Users/tanmay/Documents/TCD_Course_Material/DS/Excercise2/docker-compose.yml \
-  -f /Users/tanmay/Documents/TCD_Course_Material/DS/Excercise2/docker-compose.slim.yml \
-  up -d --no-build --force-recreate conflict-service user-service journey-service
+./register_peers.sh
 ```
-> `--force-recreate` is required so Docker actually injects the new `.env` values
-> (without it, compose sees no config diff and leaves the container unchanged).
-> `journey-service` now also uses `PEER_CONFLICT_URLS` so it can fall back to the
-> peer's conflict-service if the local one is down.
+
+> This script reads the `.env` written by `start.sh` and registers all peers with
+> the health monitor, conflict-service (triggers catch-up sync), journey-service,
+> and user-service — all in one shot. Safe to run multiple times.
+
+Expected output per peer:
+```
+[OK]    Health peer laptop-B (172.20.10.12) registered
+[OK]    Conflict peer laptop-B (172.20.10.12:8003) registered + catch-up triggered
+[OK]    Journey peer laptop-B (172.20.10.12:8080) registered + catch-up triggered
+[OK]    User peer laptop-B (172.20.10.12:8080) registered + catch-up triggered
+```
 
 ---
 
-### Step 4 — Recreate the nginx gateway (clears stale IPs)
-```bash
-docker rm -f excercise2-api-gateway-1-1 2>/dev/null; true
-
-docker compose \
-  -f /Users/tanmay/Documents/TCD_Course_Material/DS/Excercise2/docker-compose.yml \
-  -f /Users/tanmay/Documents/TCD_Course_Material/DS/Excercise2/docker-compose.slim.yml \
-  up -d --no-build api-gateway-1
-```
-> Nginx caches service IPs at startup — force-recreate so it picks up the new conflict-service IP.
-
-### ⚠️ IMPORTANT — If port 8080 fails after gateway recreate
-
-Recreating `api-gateway-1` can silently stop `frontend` and `notification-service`. Nginx crash-loops if `notification-service` is missing. **Always run this after any gateway recreate:**
+### Step 3 — Verify everything is connected
 
 ```bash
-docker compose \
-  -f /Users/tanmay/Documents/TCD_Course_Material/DS/Excercise2/docker-compose.yml \
-  -f /Users/tanmay/Documents/TCD_Course_Material/DS/Excercise2/docker-compose.slim.yml \
-  up -d --no-build
-```
-> Starts any stopped containers without touching running ones. Safe to run anytime.
-
-To confirm everything is back:
-```bash
-docker ps --format "table {{.Names}}\t{{.Status}}" | grep -E "frontend|notification|gateway"
-```
-> All three should show `Up`.
-
----
-
-### Step 5 — Confirm everything is healthy
-```bash
+# Gateway healthy
 curl http://localhost:8080/health
+
+# Conflict-service healthy + shows peer
 curl http://localhost:8003/health
-docker logs excercise2-conflict-service-1 2>&1 | grep -E "peer|sync|replication"
-docker logs excercise2-user-service-1 2>&1 | grep -E "peer|sync|replication"
+
+# Replication sync happened
+docker logs $(docker ps -qf "name=conflict-service") 2>&1 | grep -E "sync|peer" | tail -5
+# Expected: [sync] CATCH-UP from peer=http://<PEER_IP>:8003 complete: applied=N total=N
+
+# Peer health status
+curl -s http://localhost:8080/health/nodes | python3 -m json.tool
 ```
-> Should show:
-> - `Cross-node replication enabled — peers: [http://<LAPTOP_B_IP>:8003]`
-> - `[user-replication] peers configured: ['http://<LAPTOP_B_IP>:8080']`
-> - `[sync] CATCH-UP from peer=... complete: applied=N total=N`
 
 ---
 
-### Step 6 — Open the frontend
+### Step 4 — Open the frontend
+
 ```
 http://localhost:3000
 ```
-> Open this in your browser. Hard-refresh first (`Cmd+Shift+R`) to clear any cached JS.
 
----
----
-
-## LAPTOP B — Peer Machine (fresh setup)
-
-### Step 1 — Clone the repository
-```bash
-git clone https://github.com/GhoshNet/Distributed-Traffic-Service.git Excercise2
-```
-
-### Step 2 — Go into the project folder
-```bash
-cd Excercise2
-```
-
-### Step 3 — Switch to the correct branch
-```bash
-git checkout approach3
-```
-
-### Step 4 — Write the peer URLs into the .env file
-```bash
-cat > .env <<EOF
-PEER_CONFLICT_URLS=http://<LAPTOP_A_IP>:8003
-PEER_USER_URLS=http://<LAPTOP_A_IP>:8080
-EOF
-```
-> Replace `<LAPTOP_A_IP>` with Laptop A's actual IP.
+Hard-refresh first (`Cmd+Shift+R`) to clear any cached JS.
 
 ---
 
-### Step 5 — Build the services
+## Restarting / Resetting
+
+If anything goes wrong or you want a clean slate, just run `start.sh` again:
+
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.slim.yml build conflict-service journey-service
-```
-> Builds the two services that have distributed-systems logic. Takes ~60s.  
-> `conflict-service` = Go binary with slot replication + log buffer.  
-> `journey-service` = Python with failover simulation + log buffer.
-
----
-
-### Step 6 — Start the full stack
-```bash
-docker compose -f docker-compose.yml -f docker-compose.slim.yml up -d
-```
-> Starts all 6 microservices + databases + RabbitMQ + Redis + nginx.
-
----
-
-### Step 7 — Wait for services to become healthy (~30 seconds)
-```bash
-watch docker ps
-```
-> Wait until all containers show `healthy`. Press `Ctrl+C` to exit.
-
----
-
-### Step 8 — Check all services are up
-```bash
-curl http://localhost:8080/health
-curl http://localhost:8003/health
+./start.sh <PEER_IP1> <PEER_IP2>
 ```
 
-### Step 9 — Confirm catch-up sync ran
-```bash
-docker logs $(docker ps -qf "name=conflict-service" | head -1) 2>&1 | grep -E "sync|peer"
-```
-> Expected: `[sync] CATCH-UP from peer=http://<A_IP>:8003 complete: applied=N total=N`  
-> If it says `unreachable` — Laptop A is not reachable yet. Check firewall (Step 10).
+It always does a full teardown before starting — no manual cleanup needed.
 
----
-
-### Step 10 — Allow incoming connections through macOS Firewall (if needed)
-```
-System Settings → Network → Firewall → Options
-→ Make sure "Block all incoming connections" is OFF
-```
-
-### Step 11 — Verify Laptop A can reach you
-Run this **on Laptop A**:
-```bash
-curl http://<LAPTOP_B_IP>:8080/health
-curl http://<LAPTOP_B_IP>:8003/health
-```
-
-### Step 12 — Open the frontend
-```
-http://localhost:3000
-```
-> Hard-refresh (`Cmd+Shift+R`) after opening.
-
----
 ---
 
 ## Testing on the Frontend — Step by Step
@@ -272,13 +186,11 @@ http://localhost:3000
 
 > Demonstrates ALIVE → SUSPECT → DEAD health model.
 
-**Register each other as health peers first:**
+> **Note:** If you ran `./register_peers.sh` in Step 2, peers are already registered — skip to "Simulate a crash".
 
-On Laptop A → **Simulate tab** → **Register Remote Peer**:
-- Name: `bob-node` | Health URL: `http://<LAPTOP_B_IP>:8080/health` → **+ Add Peer**
-
-On Laptop B → same:
-- Name: `alice-node` | Health URL: `http://<LAPTOP_A_IP>:8080/health` → **+ Add Peer**
+**If not already registered** — on each laptop's Simulate tab → **Register Remote Peer**:
+- On Laptop A: Name `bob-node` | Health URL `http://<LAPTOP_B_IP>:8080/health` → **+ Add Peer**
+- On Laptop B: Name `alice-node` | Health URL `http://<LAPTOP_A_IP>:8080/health` → **+ Add Peer**
 
 Both frontends show the peer card as `ALIVE` (auto-refreshes every 10s).
 
@@ -286,7 +198,7 @@ Both frontends show the peer card as `ALIVE` (auto-refreshes every 10s).
 
 On **Laptop A's** Simulate tab → **💀 Kill Node**
 - Laptop A shows: `💀 FAILED`
-- This kills **both** journey-service AND user-service on Node A — login and all booking operations return 503.
+- This kills **both** journey-service AND user-service on Node A — all operations return 503.
 
 Watch **Laptop B's** peer grid:
 - ~30s → `alice-node` → `SUSPECT`
@@ -300,7 +212,7 @@ Watch **Laptop B's** peer grid:
 
 > A user on Node A can still log in and book when Node A is dead — requests transparently route to Node B.
 
-**Prerequisites:** Both nodes have each other registered as health peers (Part 3).
+**Prerequisites:** Both nodes have each other registered as health peers (Part 3 or `register_peers.sh`).
 
 **Run the demo:**
 
@@ -310,20 +222,15 @@ Watch **Laptop B's** peer grid:
 2. On **Laptop A's browser** — try **any** of these:
    - Log out and log back in → login routes to Node B → succeeds
    - Go to Journeys → book a journey → books on Node B → `CONFIRMED`
-   - The topbar shows: `⚡ Failover: 172.20.10.12:8080`
-   - Toast: `Node failover — now routing to 172.20.10.12:8080`
+   - The topbar shows: `⚡ Failover: <LAPTOP_B_IP>:8080`
+   - Toast: `Node failover — now routing to <LAPTOP_B_IP>:8080`
 
 3. Click **💚 Recover Node** → topbar returns to `🟢 Primary` on next call
 
-> **Why this works:** Every API call (including login/register) uses `resilientFetch` which tries the
-> primary node first. On 5xx or network error it tries each ALIVE peer in order. JWT tokens are
-> signed with the same secret on all nodes, so a session from Node A is valid on Node B.
-> The peer list is persisted in `localStorage` so failover works even at the login screen.
-
-**What about live notifications (WebSocket)?**  
-After 2 consecutive WS failures on the dead primary, the browser automatically reconnects to the
-peer's notification service. The `Live Data` dot may flicker grey for ~10s then go green again
-on the peer node.
+> **Why this works:** Every API call uses `resilientFetch` — tries primary first, then each ALIVE peer
+> on 5xx or network error. JWT tokens are signed with the same secret on all nodes, so a session from
+> Node A is valid on Node B. The peer list is persisted in `localStorage` so failover works even at
+> the login screen.
 
 ---
 
@@ -362,8 +269,8 @@ On **either laptop's** Simulate tab → scroll down to **Distributed Activity Fe
   - `RECV` blue — this node receiving a slot from a peer
   - `SIMULATION` red — node failure/recovery events
 
-**To see cross-node replication in real time:**  
-Make a booking on Laptop A while watching the feed on Laptop B. Within 1–2 seconds you'll see:
+**To see cross-node replication in real time:**
+Make a booking on Laptop A while watching the feed on Laptop B. Within 1–2 seconds:
 ```
 Node-A  [replication] PUSH slot=<id> vehicle=ALICE-01 → peer=http://<B>:8003 (HTTP 204)
 Node-B  [replication] RECV slot=<id> vehicle=ALICE-01 — applying locally
@@ -373,9 +280,7 @@ Node-B  [replication] RECV slot=<id> vehicle=ALICE-01 — applying locally
 
 ## Verifying Replication at the Database Level
 
-> These commands connect directly to the PostgreSQL containers on each node.
-
-### conflicts_db — the key database for replication verification
+### conflicts_db — key database for replication verification
 
 ```bash
 # All active booking slots (run on BOTH nodes — should match after replication)
@@ -393,7 +298,7 @@ docker exec excercise2-postgres-conflicts-1 psql -U conflicts_user -d conflicts_
       FROM road_segment_capacity ORDER BY time_slot_start DESC LIMIT 20;"
 ```
 
-### journeys_db — bookings made on THIS node
+### journeys_db
 
 ```bash
 docker exec excercise2-postgres-journeys-1 psql -U journeys_user -d journeys_db \
@@ -420,49 +325,35 @@ docker exec excercise2-postgres-analytics-1 psql -U analytics_user -d analytics_
   -c "SELECT event_type, COUNT(*) FROM event_logs GROUP BY event_type ORDER BY count DESC;"
 ```
 
-### How to confirm replication is working
-
-1. Make a booking on **Laptop A**
-2. Wait 2–3 seconds
-3. Run the `booked_slots` query on **Laptop B** — Alice's booking should appear there
-4. Run the count query on both — numbers should match
-
-If Laptop B's count is lower, replication hasn't arrived yet (or `PEER_CONFLICT_URLS` wasn't set).
-
 ---
 
 ## Troubleshooting
 
-| Problem | Command to diagnose | Fix |
-|---------|---------------------|-----|
-| Laptop B can't reach Laptop A | `curl http://<A_IP>:8080/health` from B's terminal | Disable macOS Firewall on Laptop A |
-| Port 8080 already allocated | `docker ps \| grep 8080` | `docker stop excercise2-haproxy-1` |
-| No conflict after cross-node booking | Activity Feed → look for `[replication]` lines | Check `PEER_CONFLICT_URLS` was exported before `up -d` |
-| Peer shows DEAD immediately | `curl --connect-timeout 5 http://<IP>:8080/health` | Firewall blocking — allow ports 8003 and 8080 |
-| Catch-up sync shows unreachable | Activity Feed or `docker logs <conflict>` \| grep sync | Peer not started yet — register peer manually (see below) |
-| Quick Route dropdown empty | Click away from Journeys tab and back | Conflict-service wasn't ready at login — auto-retries on tab switch |
-| Services not healthy after `up -d` | `docker ps` | Wait 30s more; `docker logs <service>` for errors |
-| Live Data dot grey | Normal during reconnect (~5–30s) | Doesn't affect bookings — WS reconnects automatically to peer if primary is down |
-| Failover not working (still on primary node) | Check Simulate tab — are peers `ALIVE`? | Register health peers first (Part 3), then try again |
+| Problem | Diagnosis | Fix |
+|---------|-----------|-----|
+| Port conflict on startup | `start.sh` normally handles this automatically | Re-run `./start.sh <peer-ips>` |
+| Peer shows DEAD immediately | `curl http://<IP>:8080/health` from your terminal | macOS Firewall blocking — turn it off |
+| No replication after cross-node booking | Activity Feed → look for `[replication]` lines | Re-run `./register_peers.sh` |
+| Catch-up sync shows unreachable | `docker logs $(docker ps -qf 'name=conflict-service') \| grep sync` | Peer not up yet — wait and re-run `./register_peers.sh` |
+| Quick Route dropdown empty | Click away from Journeys tab and back | Conflict-service wasn't ready at login — auto-retries |
+| Services not healthy after start | `docker ps` | Wait 30s; check `docker logs <service>` |
+| Live Data dot grey | Normal during reconnect (~5–30s) | WS reconnects automatically — doesn't affect bookings |
+| Failover not working | Simulate tab — are peers `ALIVE`? | Run `./register_peers.sh`, then retry |
+| Need a completely clean restart | — | `./start.sh <peer-ips>` — always does full teardown |
 
-**Force a catch-up sync manually (without restart):**
+**Force catch-up sync manually:**
 ```bash
-curl -X POST http://localhost:8003/internal/peers/register \
-  -H "Content-Type: application/json" \
-  -d '{"peer_url": "http://<PEER_IP>:8003"}'
+./register_peers.sh
 ```
-> Registers the peer live and immediately pulls all their active slots. No restart needed.
 
 **Check replication logs:**
 ```bash
 docker logs $(docker ps -qf "name=conflict-service" | head -1) 2>&1 | grep -E "replication|sync" | tail -20
 ```
-> Look for lines like `[replication] PUSH slot=<id> vehicle=... → peer=http://... (HTTP 204)`
 
 **View raw logs from the API:**
 ```bash
 curl http://localhost:8003/admin/logs | python3 -m json.tool | grep '"msg"' | tail -20
-curl http://localhost:8080/admin/logs -H "Authorization: Bearer <token>" | python3 -m json.tool | grep '"msg"' | tail -20
 ```
 
 ---
