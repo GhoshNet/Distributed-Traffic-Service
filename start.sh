@@ -3,14 +3,15 @@
 # start.sh — Start (or update) the slim docker-compose stack
 #
 # Usage:
-#   ./start.sh                        # standalone, no peers — fresh start
+#   ./start.sh                        # reads existing .env (peer URLs + labels)
+#                                     # OR standalone if no .env present
 #   ./start.sh <PEER_IP> [IP2 ...]    # write .env for peers, full fresh start
 #   ./start.sh --update [IP ...]      # update .env + force-recreate (no teardown)
 #   ./start.sh --verify               # check replication status only
 #
 # Examples:
+#   ./start.sh                        # uses .env you already have
 #   ./start.sh 172.20.10.12
-#   ./start.sh 172.20.10.12 172.20.10.13
 #   ./start.sh --update 172.20.10.12
 #   ./start.sh --verify
 # =============================================================================
@@ -48,13 +49,22 @@ if [ "$MODE" != "verify" ]; then
     success "Branch: $(git branch --show-current)  Commit: $(git rev-parse --short HEAD)"
 fi
 
-# ── Step 1: Build peer URL lists from args ────────────────────────────────────
+# ── Step 1: Resolve peer URLs — args take priority, then existing .env ────────
 PEER_CONFLICT_URLS=""
 PEER_USER_URLS=""
-for ip in "$@"; do
-    PEER_CONFLICT_URLS="${PEER_CONFLICT_URLS:+$PEER_CONFLICT_URLS,}http://$ip:8003"
-    PEER_USER_URLS="${PEER_USER_URLS:+$PEER_USER_URLS,}http://$ip:8080"
-done
+
+if [ $# -gt 0 ]; then
+    # IPs passed explicitly — build URLs from them
+    for ip in "$@"; do
+        PEER_CONFLICT_URLS="${PEER_CONFLICT_URLS:+$PEER_CONFLICT_URLS,}http://$ip:8003"
+        PEER_USER_URLS="${PEER_USER_URLS:+$PEER_USER_URLS,}http://$ip:8080"
+    done
+elif [ -f .env ]; then
+    # No args — load whatever is already in .env
+    # (works with both start.sh format and setup_demo.sh label format)
+    source .env
+    info "Loaded peer config from .env (MY_LABEL=${MY_LABEL:-unset})"
+fi
 
 # ── VERIFY mode: show replication status and exit ─────────────────────────────
 if [ "$MODE" = "verify" ]; then
@@ -125,16 +135,19 @@ fi
 
 # ── FRESH mode: write .env, tear down, free ports, start ──────────────────────
 
-# Step 1 cont.: write / clear .env
-if [ -n "$PEER_CONFLICT_URLS" ]; then
+# Step 1 cont.: write .env only when IPs were passed as args
+# (if we sourced an existing .env above, leave it untouched)
+if [ $# -gt 0 ] && [ -n "$PEER_CONFLICT_URLS" ]; then
     info "Peers: $PEER_CONFLICT_URLS"
     cat > .env <<EOF
 PEER_CONFLICT_URLS=$PEER_CONFLICT_URLS
 PEER_USER_URLS=$PEER_USER_URLS
 EOF
     success ".env written with peer URLs"
+elif [ -n "$PEER_CONFLICT_URLS" ]; then
+    info "Using peer URLs from .env: $PEER_CONFLICT_URLS"
 else
-    info "No peers specified — starting standalone"
+    info "No peers — starting standalone"
     rm -f .env
 fi
 
@@ -190,7 +203,16 @@ for i in $(seq 1 24); do
 done
 echo ""
 
-# Step 7: Summary
+# Step 7: Auto peer registration
+if [ -n "$PEER_CONFLICT_URLS" ]; then
+    echo ""
+    info "── Registering peers (triggers catch-up sync) ───────────────────"
+    # Give services a few more seconds to fully initialise before hitting peer endpoints
+    sleep 5
+    ./register_peers.sh
+fi
+
+# Step 8: Summary
 echo ""
 echo "============================================="
 echo -e " ${GREEN}Stack is up${NC}"
@@ -199,14 +221,9 @@ echo "  Frontend   : http://localhost:3000"
 echo "  API Gateway: http://localhost:8080"
 echo "  Conflict   : http://localhost:8003"
 echo "  RabbitMQ UI: http://localhost:15672  (journey_admin / journey_pass)"
-if [ -n "$PEER_CONFLICT_URLS" ]; then
-    echo ""
-    echo "  Peers configured: $*"
-    echo ""
-    echo "  Next: register peers live (triggers catch-up sync):"
-    echo "    ./register_peers.sh $*"
-fi
+[ -n "${MY_LABEL:-}" ] && echo "  This node  : Laptop $MY_LABEL"
+[ -n "$PEER_CONFLICT_URLS" ] && echo "  Peers      : $PEER_CONFLICT_URLS"
 echo ""
-echo "  Verify replication anytime:"
-echo "    ./start.sh --verify"
+echo "  Verify replication:  ./start.sh --verify"
+echo "  Re-register peers:   ./register_peers.sh"
 echo ""
