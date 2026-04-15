@@ -1132,9 +1132,15 @@ async function simRegisterPeer() {
             body: JSON.stringify({name, health_url: url})
         });
         const d = await r.json();
-        simLog(`Registered peer '${d.registered}' → ${d.health_url}`, 'success');
+        if (d.is_new) {
+            simLog(`Registered peer '${d.registered}' → ${d.health_url}`, 'success');
+            showToast(`Peer '${name}' added permanently`, 'success');
+        } else {
+            const labelStr = d.label ? ` (Registered as ${d.label})` : "";
+            simLog(`Peer '${d.registered}' is already in the cluster configuration${labelStr}`, 'info');
+            showToast(`${name} is already registered${labelStr}`, 'info');
+        }
         simLog(`  ${d.note}`, 'info');
-        showToast(`Peer '${name}' added`, 'success');
         document.getElementById('peer-name').value = '';
         document.getElementById('peer-url').value = '';
         await loadNodeHealth();

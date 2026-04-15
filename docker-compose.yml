@@ -117,6 +117,8 @@ services:
       sleep infinity
       "
     depends_on:
+      rabbitmq:
+        condition: service_healthy
       rabbitmq-2:
         condition: service_healthy
     healthcheck:
@@ -165,11 +167,7 @@ services:
       - sh
       - -c
       - |
-        until REDIS_IP=$$(getent hosts redis | awk '{print $$1; exit}') && [ -n "$$REDIS_IP" ]; do
-          echo "Waiting for redis DNS..."
-          sleep 2
-        done
-        echo "sentinel monitor mymaster $$REDIS_IP 6379 2" > /tmp/sentinel.conf
+        echo "sentinel monitor mymaster redis 6379 2" > /tmp/sentinel.conf
         echo "sentinel down-after-milliseconds mymaster 5000" >> /tmp/sentinel.conf
         echo "sentinel failover-timeout mymaster 10000" >> /tmp/sentinel.conf
         echo "sentinel parallel-syncs mymaster 1" >> /tmp/sentinel.conf
@@ -191,11 +189,7 @@ services:
       - sh
       - -c
       - |
-        until REDIS_IP=$$(getent hosts redis | awk '{print $$1; exit}') && [ -n "$$REDIS_IP" ]; do
-          echo "Waiting for redis DNS..."
-          sleep 2
-        done
-        echo "sentinel monitor mymaster $$REDIS_IP 6379 2" > /tmp/sentinel.conf
+        echo "sentinel monitor mymaster redis 6379 2" > /tmp/sentinel.conf
         echo "sentinel down-after-milliseconds mymaster 5000" >> /tmp/sentinel.conf
         echo "sentinel failover-timeout mymaster 10000" >> /tmp/sentinel.conf
         echo "sentinel parallel-syncs mymaster 1" >> /tmp/sentinel.conf
@@ -215,11 +209,7 @@ services:
       - sh
       - -c
       - |
-        until REDIS_IP=$$(getent hosts redis | awk '{print $$1; exit}') && [ -n "$$REDIS_IP" ]; do
-          echo "Waiting for redis DNS..."
-          sleep 2
-        done
-        echo "sentinel monitor mymaster $$REDIS_IP 6379 2" > /tmp/sentinel.conf
+        echo "sentinel monitor mymaster redis 6379 2" > /tmp/sentinel.conf
         echo "sentinel down-after-milliseconds mymaster 5000" >> /tmp/sentinel.conf
         echo "sentinel failover-timeout mymaster 10000" >> /tmp/sentinel.conf
         echo "sentinel parallel-syncs mymaster 1" >> /tmp/sentinel.conf
@@ -501,10 +491,13 @@ services:
       dockerfile: journey-service/Dockerfile
     ports:
       - "8002:8000"
+    volumes:
+      - ./.env:/app/.env
     environment:
       DATABASE_URL: postgresql+asyncpg://journeys_user:journeys_pass@postgres-journeys:5432/journeys_db
       DATABASE_READ_URL: postgresql+asyncpg://journeys_user:journeys_pass@postgres-journeys-replica:5432/journeys_db
       REDIS_URL: redis://redis:6379/1
+      ENFORCEMENT_REDIS_URL: redis://redis:6379/4
       REDIS_SENTINEL_ADDRS: redis-sentinel:26379,redis-sentinel-2:26379,redis-sentinel-3:26379
       REDIS_MASTER_NAME: mymaster
       RABBITMQ_URL: amqp://journey_admin:journey_pass@rabbitmq:5672/journey_vhost
@@ -518,6 +511,10 @@ services:
       redis:
         condition: service_healthy
       rabbitmq:
+        condition: service_healthy
+      conflict-service:
+        condition: service_healthy
+      user-service:
         condition: service_healthy
     healthcheck:
       test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" ]
@@ -600,12 +597,15 @@ services:
       REDIS_MASTER_NAME: mymaster
       RABBITMQ_URL: amqp://journey_admin:journey_pass@rabbitmq:5672/journey_vhost
       JOURNEY_SERVICE_URL: http://journey-service:8000
+      USER_SERVICE_URL: http://user-service:8000
       JWT_SECRET: keefkfwjNBEFINoodwoedibIOEJFKWNFIjjjdIIIOOP
       SERVICE_NAME: enforcement-service
     depends_on:
       redis:
         condition: service_healthy
       rabbitmq:
+        condition: service_healthy
+      journey-service:
         condition: service_healthy
     healthcheck:
       test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" ]

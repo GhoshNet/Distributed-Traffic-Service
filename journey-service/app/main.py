@@ -249,23 +249,52 @@ async def simulate_status():
 @app.post("/admin/peers/register")
 async def register_peer(payload: dict):
     """
-    Dynamically register a remote LAPTOP/NODE to monitor.
-
-    Useful when teammates run the stack on their own machines on the same
-    LAN/hotspot. POST the peer's /health URL and it will appear in
-    /health/nodes under 'laptop_peers' within one heartbeat cycle (~10 s).
-
-    Body: {"name": "alice-laptop", "health_url": "http://192.168.1.42:8080/health"}
+    Dynamically register a remote LAPTOP/NODE to monitor and replicate.
+    Also appends the peer to .env for persistence across restarts.
     """
+    import httpx
+    import re
+    from shared.persistence import append_peer_to_env
+
     name = payload.get("name")
-    health_url = payload.get("health_url")
+    health_url = (payload.get("health_url") or "").rstrip("/")
     if not name or not health_url:
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail="Both 'name' and 'health_url' are required")
-    # Register into the LAPTOP monitor, NOT the internal-services monitor
+
+    # 1. Register for local health monitoring
     laptop_monitor.register(name, health_url)
-    return {"registered": name, "health_url": health_url,
-            "note": "Will appear in /health/nodes laptop_peers within 10 seconds"}
+
+    # 2. Extract IP and persist to .env
+    # Matches 'http://<ip>:8080/health'
+    match = re.search(r'https?://([^:/]+)', health_url)
+    was_new = False
+    label = None
+    if match:
+        peer_ip = match.group(1)
+        # Persistent save
+        was_new, label = append_peer_to_env(peer_ip)
+
+        # 3. Broadcast to peer-aware services on THIS laptop
+        # So they start replicating data immediately
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            # Tell Journey internal sync
+            await client.post(f"http://journey-service:8000/internal/journeys/peers/register", 
+                             json={"peer_url": f"http://{peer_ip}:8080"})
+            # Tell User internal sync
+            await client.post(f"http://user-service:8000/internal/peers/register", 
+                             json={"peer_url": f"http://{peer_ip}:8080"})
+            # Tell Conflict internal sync
+            await client.post(f"http://conflict-service:8000/internal/peers/register", 
+                             json={"peer_url": f"http://{peer_ip}:8003"})
+
+    return {
+        "registered": name, 
+        "health_url": health_url,
+        "is_new": was_new,
+        "label": label,
+        "note": "Peer added permanently to .env" if was_new else f"Peer already in .env as {label or 'unknown label'}."
+    }
 
 
 @app.delete("/admin/peers/{name}")
@@ -337,7 +366,7 @@ async def rebuild_cache():
     from shared.recovery import rebuild_enforcement_cache
     from .database import async_session
     enforcement_redis = redis_async.from_url(
-        os.getenv("REDIS_URL", "redis://redis:6379/4").replace("/1", "/4"),
+        os.getenv("ENFORCEMENT_REDIS_URL", "redis://redis:6379/4"),
         decode_responses=True,
     )
     count = await rebuild_enforcement_cache(enforcement_redis, async_session)

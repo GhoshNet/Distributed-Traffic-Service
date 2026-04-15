@@ -134,7 +134,7 @@ class EnforcementService:
                     async with httpx.AsyncClient(timeout=10) as client:
                         user_resp = await _user_cb().call(
                             client.get,
-                            f"http://user-service:8000/api/users/license/{license_number}",
+                            f"{os.getenv('USER_SERVICE_URL', 'http://user-service:8000')}/api/users/license/{license_number}",
                         )
                         if user_resp.status_code != 200:
                             return VerificationResponse(is_valid=False, checked_at=now)

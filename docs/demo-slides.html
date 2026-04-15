@@ -1,0 +1,780 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Group J — Distributed Journey Booking System</title>
+<style>
+  :root {
+    --bg:      #0f1117;
+    --surface: #1a1d27;
+    --card:    #22263a;
+    --accent:  #4f8ef7;
+    --green:   #3ecf8e;
+    --orange:  #f7934f;
+    --red:     #f74f4f;
+    --yellow:  #f7d44f;
+    --text:    #e8eaf2;
+    --muted:   #7b82a0;
+    --border:  #2e3350;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* ── Slide container ── */
+  .deck { width: 100%; height: 100vh; position: relative; }
+  .slide {
+    position: absolute; inset: 0;
+    display: none; flex-direction: column;
+    padding: 52px 72px;
+    background: var(--bg);
+    animation: fadeIn .25s ease;
+  }
+  .slide.active { display: flex; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+  /* ── Navigation ── */
+  .nav {
+    position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 16px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 40px; padding: 10px 24px;
+    z-index: 100; box-shadow: 0 4px 24px rgba(0,0,0,.4);
+  }
+  .nav button {
+    background: var(--card); border: 1px solid var(--border);
+    color: var(--text); border-radius: 20px;
+    padding: 6px 20px; cursor: pointer; font-size: 14px;
+    transition: background .15s, border-color .15s;
+  }
+  .nav button:hover { background: var(--accent); border-color: var(--accent); }
+  #slide-counter { font-size: 13px; color: var(--muted); min-width: 60px; text-align: center; }
+  .progress {
+    position: fixed; top: 0; left: 0; height: 3px;
+    background: var(--accent); transition: width .25s;
+    z-index: 100;
+  }
+
+  /* ── Typography ── */
+  .eyebrow {
+    font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--accent); margin-bottom: 10px; font-weight: 600;
+  }
+  h1 { font-size: 52px; font-weight: 700; line-height: 1.1; }
+  h2 { font-size: 34px; font-weight: 700; line-height: 1.15; margin-bottom: 28px; }
+  h3 { font-size: 19px; font-weight: 600; margin-bottom: 10px; }
+  p  { font-size: 16px; line-height: 1.65; color: var(--muted); }
+  .subtitle { font-size: 20px; color: var(--muted); margin-top: 12px; }
+  .tag {
+    display: inline-block; font-size: 11px; font-weight: 700;
+    letter-spacing: .08em; text-transform: uppercase;
+    padding: 3px 10px; border-radius: 4px; margin-right: 6px;
+  }
+  .tag-blue   { background: rgba(79,142,247,.15); color: var(--accent); }
+  .tag-green  { background: rgba(62,207,142,.15); color: var(--green);  }
+  .tag-orange { background: rgba(247,147,79,.15); color: var(--orange); }
+  .tag-red    { background: rgba(247,79,79,.15);  color: var(--red);    }
+  .tag-yellow { background: rgba(247,212,79,.15); color: var(--yellow); }
+
+  /* ── Layout helpers ── */
+  .cols { display: grid; gap: 24px; }
+  .cols-2 { grid-template-columns: 1fr 1fr; }
+  .cols-3 { grid-template-columns: 1fr 1fr 1fr; }
+  .cols-4 { grid-template-columns: repeat(4, 1fr); }
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 22px 24px;
+  }
+  .card-accent { border-left: 3px solid var(--accent); }
+  .card-green  { border-left: 3px solid var(--green);  }
+  .card-orange { border-left: 3px solid var(--orange); }
+  .card-red    { border-left: 3px solid var(--red);    }
+  .card-yellow { border-left: 3px solid var(--yellow); }
+
+  ul { list-style: none; padding: 0; }
+  ul li { padding: 5px 0; font-size: 15px; color: var(--muted); }
+  ul li::before { content: "→ "; color: var(--accent); font-weight: 700; }
+
+  /* ── Diagram elements ── */
+  .flow {
+    display: flex; align-items: center; gap: 0;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 18px 24px;
+    overflow: hidden; flex-wrap: wrap; row-gap: 12px;
+  }
+  .flow-box {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 16px;
+    font-size: 13px; font-weight: 600; white-space: nowrap;
+    text-align: center;
+  }
+  .flow-arrow {
+    font-size: 18px; color: var(--muted); padding: 0 10px; flex-shrink: 0;
+  }
+  .flow-box.highlight { border-color: var(--accent); color: var(--accent); }
+  .flow-box.ok        { border-color: var(--green);  color: var(--green);  }
+  .flow-box.warn      { border-color: var(--orange); color: var(--orange); }
+  .flow-box.bad       { border-color: var(--red);    color: var(--red);    }
+
+  /* ── Service grid ── */
+  .svc {
+    display: flex; flex-direction: column; justify-content: space-between;
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 18px;
+  }
+  .svc-name { font-size: 14px; font-weight: 700; margin-bottom: 6px; }
+  .svc-lang { font-size: 11px; color: var(--muted); margin-bottom: 10px; }
+  .svc-desc { font-size: 12px; color: var(--muted); line-height: 1.5; }
+
+  /* ── Title slide ── */
+  .title-slide { justify-content: center; }
+  .title-slide h1 { font-size: 58px; }
+  .members { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 32px; }
+  .member-tag {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 18px;
+    font-size: 13px; color: var(--muted);
+  }
+
+  /* ── Tradeoff table ── */
+  .tradeoff-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  .tradeoff-table th {
+    background: var(--surface); color: var(--muted);
+    text-align: left; padding: 10px 14px;
+    font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+    border-bottom: 1px solid var(--border);
+  }
+  .tradeoff-table td {
+    padding: 10px 14px; border-bottom: 1px solid var(--border);
+    vertical-align: top; color: var(--muted); line-height: 1.5;
+  }
+  .tradeoff-table tr:last-child td { border-bottom: none; }
+  .tradeoff-table td:first-child { color: var(--text); font-weight: 600; }
+
+  /* ── Demo step list ── */
+  .steps { counter-reset: step; }
+  .step {
+    counter-increment: step;
+    display: flex; gap: 18px; align-items: flex-start;
+    padding: 14px 0; border-bottom: 1px solid var(--border);
+  }
+  .step:last-child { border-bottom: none; }
+  .step-num {
+    background: var(--accent); color: #fff;
+    font-size: 12px; font-weight: 800;
+    width: 26px; height: 26px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0; margin-top: 2px;
+  }
+  .step-title { font-size: 15px; font-weight: 600; margin-bottom: 3px; }
+  .step-desc  { font-size: 13px; color: var(--muted); line-height: 1.5; }
+
+  /* ── Stat boxes ── */
+  .stat { text-align: center; padding: 24px 16px; }
+  .stat-num { font-size: 40px; font-weight: 800; color: var(--accent); }
+  .stat-label { font-size: 13px; color: var(--muted); margin-top: 4px; }
+
+  /* ── Known gap list ── */
+  .gap-item {
+    background: var(--card); border: 1px solid var(--border);
+    border-left: 3px solid var(--orange);
+    border-radius: 8px; padding: 14px 18px; margin-bottom: 10px;
+  }
+  .gap-title { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
+  .gap-body  { font-size: 13px; color: var(--muted); line-height: 1.5; }
+</style>
+</head>
+<body>
+
+<div class="progress" id="progress"></div>
+
+<div class="deck" id="deck">
+
+  <!-- ═══════════════════════════════════════════ SLIDE 1 — TITLE -->
+  <div class="slide title-slide active">
+    <div class="eyebrow">CS7NS6 · Distributed Systems · Group J</div>
+    <h1>Journey Booking<br>System</h1>
+    <p class="subtitle">A globally-accessible, fault-tolerant distributed<br>service for pre-booking road journeys</p>
+    <div class="members">
+      <span class="member-tag">Aditya Kumar Singh</span>
+      <span class="member-tag">Parth Ashok Deshmukh</span>
+      <span class="member-tag">Sai Eeshwar Divaakar</span>
+      <span class="member-tag">Tanmay Ghosh</span>
+      <span class="member-tag">Saurabh Deshmukh</span>
+      <span class="member-tag">Sneha Meto</span>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════ SLIDE 2 — PROBLEM -->
+  <div class="slide">
+    <div class="eyebrow">Problem Statement</div>
+    <h2>What are we building?</h2>
+    <div class="cols cols-2" style="margin-bottom:24px;">
+      <div class="card card-accent">
+        <h3>The Constraint</h3>
+        <p>No driver may start a journey without a <strong style="color:var(--text)">confirmed booking</strong>. The system must enforce this even under concurrent load and partial failures.</p>
+      </div>
+      <div class="card card-green">
+        <h3>The Scale</h3>
+        <p>1M active drivers nationally. 30% book in a 30-minute morning peak = <strong style="color:var(--text)">~167 bookings/s</strong>. Our two-node demo targets 50/s per node.</p>
+      </div>
+    </div>
+    <div class="cols cols-3">
+      <div class="card">
+        <h3>Drivers</h3>
+        <ul>
+          <li>Register &amp; login</li>
+          <li>Book a journey</li>
+          <li>Get real-time confirmation</li>
+          <li>Cancel bookings</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>System</h3>
+        <ul>
+          <li>Detect scheduling conflicts</li>
+          <li>Enforce road capacity</li>
+          <li>Survive node failures</li>
+          <li>Replicate across laptops</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Enforcement Agents</h3>
+        <ul>
+          <li>Verify vehicle at roadside</li>
+          <li>&lt;200ms response required</li>
+          <li>Works during partitions</li>
+          <li>Sub-20ms cache hit</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════ SLIDE 3 — ARCHITECTURE -->
+  <div class="slide">
+    <div class="eyebrow">Architecture</div>
+    <h2>Six microservices, each with its own database</h2>
+    <div class="cols cols-3" style="margin-bottom:20px;">
+      <div class="svc">
+        <div>
+          <div class="svc-name" style="color:var(--accent)">User Service</div>
+          <div class="svc-lang">Python / FastAPI · Port 8001</div>
+          <div class="svc-desc">JWT auth, vehicle CRUD, distributed lock on registration, read/write replica split</div>
+        </div>
+      </div>
+      <div class="svc">
+        <div>
+          <div class="svc-name" style="color:var(--green)">Journey Service</div>
+          <div class="svc-lang">Python / FastAPI · Port 8002</div>
+          <div class="svc-desc">Saga orchestrator, transactional outbox, circuit breaker, idempotency, 2PC coordinator, peer health monitor</div>
+        </div>
+      </div>
+      <div class="svc">
+        <div>
+          <div class="svc-name" style="color:var(--orange)">Conflict Service</div>
+          <div class="svc-lang">Go / chi · Port 8003</div>
+          <div class="svc-desc">SERIALIZABLE + SELECT FOR UPDATE, 1km grid-cell road model, 30-min slots, cross-node slot replication</div>
+        </div>
+      </div>
+    </div>
+    <div class="cols cols-3">
+      <div class="svc">
+        <div>
+          <div class="svc-name" style="color:var(--yellow)">Notification Service</div>
+          <div class="svc-lang">Go / chi + Gorilla WS · Port 8004</div>
+          <div class="svc-desc">WebSocket push, Redis history (50 entries, 7-day TTL), exactly-once dedup via SETNX</div>
+        </div>
+      </div>
+      <div class="svc">
+        <div>
+          <div class="svc-name" style="color:var(--red)">Enforcement Service</div>
+          <div class="svc-lang">Python / FastAPI · Port 8005</div>
+          <div class="svc-desc">Redis-first lookup, &lt;20ms cache hit, stale header on partition, licence→user cache 24h TTL</div>
+        </div>
+      </div>
+      <div class="svc">
+        <div>
+          <div class="svc-name" style="color:var(--muted)">Analytics Service</div>
+          <div class="svc-lang">Go / chi · Port 8006</div>
+          <div class="svc-desc">Dual-write counters, hourly rollup, WAL replica-lag endpoint, aggregate health view</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════ SLIDE 4 — INFRA -->
+  <div class="slide">
+    <div class="eyebrow">Infrastructure</div>
+    <h2>26 containers, every node runs the full stack</h2>
+    <div class="cols cols-4" style="margin-bottom:20px;">
+      <div class="stat card">
+        <div class="stat-num">4</div>
+        <div class="stat-label">PostgreSQL primary+replica pairs (one per service)</div>
+      </div>
+      <div class="stat card">
+        <div class="stat-num">3</div>
+        <div class="stat-label">Redis Sentinel nodes (quorum 2)</div>
+      </div>
+      <div class="stat card">
+        <div class="stat-num">3</div>
+        <div class="stat-label">RabbitMQ cluster nodes (topic exchange)</div>
+      </div>
+      <div class="stat card">
+        <div class="stat-num">2</div>
+        <div class="stat-label">nginx instances behind HAProxy at :8080</div>
+      </div>
+    </div>
+    <div class="cols cols-2">
+      <div class="card card-accent">
+        <h3>Why database-per-service?</h3>
+        <p>Independent schema evolution, no cross-service joins, bounded failure blast radius. Each service owns its data contract. Trade-off: joins become API calls.</p>
+      </div>
+      <div class="card card-green">
+        <h3>Why every laptop runs the full stack?</h3>
+        <p>Losing one laptop doesn't take the system down. No shared database tier to fail. Active-active means any node can serve any request. Trade-off: more memory per machine.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════ SLIDE 5 — BOOKING SAGA -->
+  <div class="slide">
+    <div class="eyebrow">Core Flow</div>
+    <h2>The Booking Saga</h2>
+    <div class="flow" style="margin-bottom:24px;">
+      <div class="flow-box">Client POST /journeys</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box">Idempotency check</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box highlight">INSERT PENDING</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box">SERIALIZABLE check<br><small style="color:var(--muted)">conflict-service</small></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box ok">CONFIRMED +<br>outbox event</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box">RabbitMQ fan-out<br><small style="color:var(--muted)">async</small></div>
+    </div>
+    <div class="cols cols-3">
+      <div class="card card-accent">
+        <h3>Transactional Outbox</h3>
+        <p>Journey row and outbox event written in <strong style="color:var(--text)">one DB transaction</strong>. Background drainer publishes to RabbitMQ every 2s. Survives broker restarts — no confirmed booking is ever lost.</p>
+      </div>
+      <div class="card card-green">
+        <h3>Idempotency Keys</h3>
+        <p>Client sends <code style="color:var(--green)">Idempotency-Key</code> header. Duplicate requests return the <strong style="color:var(--text)">cached result</strong> without re-running the saga. Safe to retry on network failure.</p>
+      </div>
+      <div class="card card-orange">
+        <h3>Conflict Check</h3>
+        <p>Three checks in one <code style="color:var(--orange)">SERIALIZABLE</code> transaction: driver overlap, vehicle overlap, road-segment capacity. <strong style="color:var(--text)">SELECT FOR UPDATE</strong> prevents two concurrent bookings both passing.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════ SLIDE 6 — CONFLICT DETECTION -->
+  <div class="slide">
+    <div class="eyebrow">Conflict Detection</div>
+    <h2>Grid-cell road capacity model</h2>
+    <div class="cols cols-2" style="margin-bottom:20px;">
+      <div class="card card-orange">
+        <h3>How the grid works</h3>
+        <p>Each road is broken into <strong style="color:var(--text)">~1km grid cells</strong> (0.01° resolution). Each cell has a capacity counter per <strong style="color:var(--text)">30-minute time slot</strong>. A booking walks the actual waypoints of its route and increments only the cells it physically crosses.</p>
+        <br>
+        <p>Two routes that are geographically close but on different roads <strong style="color:var(--text)">never contend</strong> — the lock is scoped to the exact cells traversed.</p>
+      </div>
+      <div class="card card-red">
+        <h3>Why SERIALIZABLE + SELECT FOR UPDATE?</h3>
+        <p>Application-level locking (Redis SETNX, optimistic version columns) has a race window between read and write. Two concurrent bookings for the same cell and slot will both read "capacity available" before either writes.</p>
+        <br>
+        <p><code style="color:var(--red)">SERIALIZABLE + SELECT FOR UPDATE</code> means the second transaction <strong style="color:var(--text)">deadlocks and retries</strong>, or sees the first commit and rejects. No race window at all.</p>
+      </div>
+    </div>
+    <div class="card" style="background:var(--surface);">
+      <h3>Three checks, one transaction</h3>
+      <div class="flow">
+        <div class="flow-box warn">Driver overlap?</div>
+        <div class="flow-arrow">+</div>
+        <div class="flow-box warn">Vehicle overlap?</div>
+        <div class="flow-arrow">+</div>
+        <div class="flow-box warn">Road capacity?</div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-box ok">All clear → CONFIRMED</div>
+        <div class="flow-arrow">or</div>
+        <div class="flow-box bad">Any fail → REJECTED + reason</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════ SLIDE 7 — FAULT TOLERANCE -->
+  <div class="slide">
+    <div class="eyebrow">Fault Tolerance</div>
+    <h2>What happens when things break?</h2>
+    <table class="tradeoff-table">
+      <thead>
+        <tr>
+          <th style="width:22%">Failure</th>
+          <th>What the system does</th>
+          <th style="width:28%">Mechanism</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Journey service crash</td>
+          <td>Outbox drainer resumes on restart. Browser resilientFetch retries peer node transparently.</td>
+          <td><span class="tag tag-blue">Outbox</span><span class="tag tag-green">Client failover</span></td>
+        </tr>
+        <tr>
+          <td>Conflict service crash</td>
+          <td>conflict_client.py tries local, then each peer in PEER_CONFLICT_URLS. Per-URL circuit breakers open independently.</td>
+          <td><span class="tag tag-orange">Circuit breaker</span><span class="tag tag-blue">Peer fallback</span></td>
+        </tr>
+        <tr>
+          <td>RabbitMQ outage</td>
+          <td>Outbox row already persisted in same DB transaction. Drainer replays entire backlog on reconnect.</td>
+          <td><span class="tag tag-blue">Transactional outbox</span></td>
+        </tr>
+        <tr>
+          <td>Redis primary loss</td>
+          <td>Sentinel (quorum 2/3) promotes replica within ~15s. Services auto-reconnect.</td>
+          <td><span class="tag tag-red">Redis Sentinel</span></td>
+        </tr>
+        <tr>
+          <td>Full node kill</td>
+          <td>Journey + user services return 503. Browser detects, switches to peer node — no re-login needed.</td>
+          <td><span class="tag tag-green">Shared JWT secret</span><span class="tag tag-blue">localStorage peers</span></td>
+        </tr>
+        <tr>
+          <td>Network partition</td>
+          <td>Enforcement continues from cache with X-Cache-Stale header. Re-sync back-fills on merge.</td>
+          <td><span class="tag tag-yellow">Partition manager</span><span class="tag tag-orange">Stale reads</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ═══════════════════════════════════════════ SLIDE 8 — MULTI-NODE -->
+  <div class="slide">
+    <div class="eyebrow">Multi-Node Design</div>
+    <h2>How two laptops talk to each other</h2>
+    <div class="cols cols-2" style="margin-bottom:20px;">
+      <div>
+        <div class="card card-accent" style="margin-bottom:14px;">
+          <h3>Peer Discovery</h3>
+          <p>Static env vars (<code>PEER_CONFLICT_URLS</code>) for known nodes at startup. <strong style="color:var(--text)">Dynamic gossip</strong> via POST /admin/peers/register at runtime — propagates to conflict, user, and journey services automatically.</p>
+        </div>
+        <div class="card card-green">
+          <h3>Journey Replication</h3>
+          <p>After every confirmed booking, a goroutine pushes to all peers via POST /internal/journeys/replicate. On boot: full catch-up pull from each peer. Safety net: 5-minute periodic re-sync.</p>
+        </div>
+      </div>
+      <div>
+        <div class="card card-orange" style="margin-bottom:14px;">
+          <h3>Slot Replication (Conflict Service)</h3>
+          <p>After each successful conflict check, slots are pushed to peers via /internal/slots/replicate. Catch-up sync on boot. Result: a booking on Node A blocks the same slot on Node B (after replication propagates).</p>
+        </div>
+        <div class="card card-yellow">
+          <h3>Health Model: ALIVE → SUSPECT → DEAD</h3>
+          <p>Each node probes peers every 10s. 3 misses → SUSPECT. 6 misses → DEAD. &lt;50% alive → LOCAL_ONLY mode. Visible at /health/nodes and in the frontend dashboard.</p>
+        </div>
+      </div>
+    </div>
+    <div class="card" style="background:var(--surface); padding:14px 20px;">
+      <p style="font-size:13px;"><strong style="color:var(--text)">Key insight:</strong> JWTs are signed with the same shared secret on all nodes. A session started on Laptop A is valid on Laptop B — no re-login after failover.</p>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════ SLIDE 9 — TRADEOFFS -->
+  <div class="slide">
+    <div class="eyebrow">Design Decisions & Tradeoffs</div>
+    <h2>Why we made the choices we did</h2>
+    <table class="tradeoff-table">
+      <thead>
+        <tr>
+          <th style="width:24%">Decision</th>
+          <th style="width:30%">Why we chose it</th>
+          <th>The tradeoff we accepted</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Active-active (every laptop runs full stack)</td>
+          <td>Losing one node doesn't require manual failover. Any node can serve any request.</td>
+          <td>Two bookings submitted simultaneously to two nodes can both pass within the ~200ms replication window. Documented, accepted for demo scale.</td>
+        </tr>
+        <tr>
+          <td>Transactional outbox over dual-write</td>
+          <td>Eliminates "wrote to DB, crashed before publishing to RabbitMQ" — the most common event-loss bug.</td>
+          <td>Extra table to poll, 2-second delivery lag to RabbitMQ. Worth it for the durability guarantee.</td>
+        </tr>
+        <tr>
+          <td>SERIALIZABLE in conflict-service only</td>
+          <td>Only the conflict check needs serializable — ordinary CRUD (user login, journey list) doesn't. Avoids locking overhead on hot paths.</td>
+          <td>More complex reasoning about which operations are safe at READ COMMITTED.</td>
+        </tr>
+        <tr>
+          <td>Saga pattern (not distributed 2PC everywhere)</td>
+          <td>Saga is non-blocking. 2PC blocks both participants until the coordinator responds — bad under network partitions.</td>
+          <td>Requires explicit compensating transactions. 2PC is offered as an opt-in demo path (?mode=2pc).</td>
+        </tr>
+        <tr>
+          <td>Redis-first enforcement</td>
+          <td>Roadside checks are read-heavy and latency-critical (&lt;200ms hard limit). Redis gives &lt;20ms p95 on cache hit.</td>
+          <td>Cache is cold on boot. First check after restart always pays the fallback REST cost.</td>
+        </tr>
+        <tr>
+          <td>Shared JWT secret across nodes</td>
+          <td>Enables transparent session migration — the user doesn't re-login after failover to a peer node.</td>
+          <td>No per-node token revocation. Compromised secret affects all nodes.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ═══════════════════════════════════════════ SLIDE 10 — KNOWN GAPS -->
+  <div class="slide">
+    <div class="eyebrow">Honest Assessment</div>
+    <h2>Known limitations — not hidden</h2>
+    <div class="cols cols-2">
+      <div>
+        <div class="gap-item">
+          <div class="gap-title">Cross-node double-booking window</div>
+          <div class="gap-body">Two bookings to two different nodes within ~200ms can both be CONFIRMED for the same slot. Fixing this requires a consensus protocol (Paxos/Raft) across nodes — out of scope for this exercise. Documented trade-off of active-active eventual consistency.</div>
+        </div>
+        <div class="gap-item">
+          <div class="gap-title">No saga compensation retry</div>
+          <div class="gap-body">If the conflict-service is permanently unreachable, the booking fails fast with REJECTED. There is no automatic retry loop or dead-letter compensation.</div>
+        </div>
+        <div class="gap-item">
+          <div class="gap-title">Enforcement cache cold on boot</div>
+          <div class="gap-body">First enforcement check after a restart always misses Redis and pays the fallback REST cost. No cache warming on startup was implemented.</div>
+        </div>
+      </div>
+      <div>
+        <div class="gap-item">
+          <div class="gap-title">WebSocket registry in memory only</div>
+          <div class="gap-body">The notification service holds active WebSocket connections in a process-local map. A restart drops all live connections; clients must reconnect. Notification history is safe in Redis — no data is lost, only the live push.</div>
+        </div>
+        <div class="gap-item">
+          <div class="gap-title">No token blacklisting</div>
+          <div class="gap-body">Revoked JWTs remain valid until natural expiry (24h). No deny-list on logout. Acceptable for a demo system; production would need Redis-backed revocation.</div>
+        </div>
+        <div class="gap-item">
+          <div class="gap-title">RabbitMQ cluster unreliable on single host</div>
+          <div class="gap-body">Three RabbitMQ nodes on one Docker host compete for the Erlang distribution port. All messaging semantics are demonstrated; cluster HA is better shown across physical machines.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════ SLIDE 11 — DEMO STEPS -->
+  <div class="slide">
+    <div class="eyebrow">Live Demo</div>
+    <h2>Demo walkthrough — 9 steps</h2>
+    <div class="cols cols-2">
+      <div class="steps">
+        <div class="step">
+          <div class="step-num">1</div>
+          <div>
+            <div class="step-title">Both laptops start their stacks</div>
+            <div class="step-desc">docker-compose up — 26 containers, healthy status on all services</div>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">2</div>
+          <div>
+            <div class="step-title">Register the peer</div>
+            <div class="step-desc">POST /admin/peers/register — Laptop A learns about Laptop B. Health dashboard shows both nodes ALIVE.</div>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">3</div>
+          <div>
+            <div class="step-title">Book on Laptop A</div>
+            <div class="step-desc">Journey CONFIRMED on Node A. Wait 2-3 seconds. Check Node B's journey list — same journey appears via replication.</div>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">4</div>
+          <div>
+            <div class="step-title">Cross-node conflict detection</div>
+            <div class="step-desc">Try booking the same slot on Laptop B — REJECTED. The replicated slot blocked it.</div>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">5</div>
+          <div>
+            <div class="step-title">WebSocket notifications</div>
+            <div class="step-desc">Real-time push visible in the browser on booking confirmation and cancellation.</div>
+          </div>
+        </div>
+      </div>
+      <div class="steps">
+        <div class="step">
+          <div class="step-num">6</div>
+          <div>
+            <div class="step-title">Conflict-service peer failover</div>
+            <div class="step-desc">Stop Laptop A's conflict-service container. Book on Laptop A — request routes through Laptop B's conflict-service automatically.</div>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">7</div>
+          <div>
+            <div class="step-title">Full node kill</div>
+            <div class="step-desc">POST /admin/simulate/fail — Laptop A returns 503. Frontend topbar shows "Failover: [Laptop B IP]". All operations continue.</div>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">8</div>
+          <div>
+            <div class="step-title">Recovery</div>
+            <div class="step-desc">POST /admin/simulate/recover — Laptop A rejoins. 5-minute re-sync catches up any bookings made during downtime.</div>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">9</div>
+          <div>
+            <div class="step-title">Enforcement verification</div>
+            <div class="step-desc">GET /api/enforcement/verify/vehicle/{plate} — sub-10ms cache hit returns is_valid: true with full journey data.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════ SLIDE 12 — RESULTS -->
+  <div class="slide">
+    <div class="eyebrow">Test Results</div>
+    <h2>What we verified</h2>
+    <div class="cols cols-4" style="margin-bottom:20px;">
+      <div class="stat card">
+        <div class="stat-num" style="color:var(--green)">~250ms</div>
+        <div class="stat-label">Booking saga p95 (slim stack)</div>
+      </div>
+      <div class="stat card">
+        <div class="stat-num" style="color:var(--green)">&lt;20ms</div>
+        <div class="stat-label">Enforcement cache hit p95</div>
+      </div>
+      <div class="stat card">
+        <div class="stat-num" style="color:var(--green)">&lt;200ms</div>
+        <div class="stat-label">Cross-node slot replication on LAN</div>
+      </div>
+      <div class="stat card">
+        <div class="stat-num" style="color:var(--green)">1/10</div>
+        <div class="stat-label">Confirmed under 10-concurrent-booking storm</div>
+      </div>
+    </div>
+    <div class="cols cols-3">
+      <div class="card card-green">
+        <h3>Passes</h3>
+        <ul>
+          <li>Booking saga (single node)</li>
+          <li>Idempotent retries</li>
+          <li>Conflict detection (single + cross-node)</li>
+          <li>Two-phase commit booking</li>
+          <li>Circuit breaker open/close</li>
+          <li>Outbox survives RabbitMQ restart</li>
+          <li>Redis Sentinel failover</li>
+          <li>Full-node kill + client failover</li>
+          <li>JWT cross-node (no re-login)</li>
+        </ul>
+      </div>
+      <div class="card card-yellow">
+        <h3>Partial</h3>
+        <ul>
+          <li>Partition detection state machine<br><small style="color:var(--muted)">(correct on dep loss, not on live WAN partition)</small></li>
+          <li>RabbitMQ 3-node cluster<br><small style="color:var(--muted)">(single node stable; cluster join unreliable on one host)</small></li>
+        </ul>
+      </div>
+      <div class="card card-red">
+        <h3>Known Gaps</h3>
+        <ul>
+          <li>Saga compensation retry</li>
+          <li>Distributed tracing spans (Jaeger)</li>
+          <li>Audit HMAC chain</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════ SLIDE 13 — SUMMARY -->
+  <div class="slide">
+    <div class="eyebrow">Summary</div>
+    <h2>What this system demonstrates</h2>
+    <div class="cols cols-3" style="margin-bottom:20px;">
+      <div class="card card-accent">
+        <h3>Consistency</h3>
+        <ul>
+          <li>SERIALIZABLE conflict detection</li>
+          <li>SELECT FOR UPDATE</li>
+          <li>Transactional outbox</li>
+          <li>Idempotency keys</li>
+          <li>Distributed lock (Redlock-style)</li>
+        </ul>
+      </div>
+      <div class="card card-green">
+        <h3>Availability</h3>
+        <ul>
+          <li>Active-active multi-node</li>
+          <li>Circuit breakers per endpoint</li>
+          <li>Client-side resilientFetch</li>
+          <li>Redis Sentinel</li>
+          <li>PostgreSQL WAL replication</li>
+        </ul>
+      </div>
+      <div class="card card-orange">
+        <h3>Partition Tolerance</h3>
+        <ul>
+          <li>CONNECTED→SUSPECTED→PARTITIONED</li>
+          <li>Stale reads with X-Cache-Stale header</li>
+          <li>Outbox replay on reconnect</li>
+          <li>5-min periodic re-sync</li>
+          <li>LOCAL_ONLY mode below quorum</li>
+        </ul>
+      </div>
+    </div>
+    <div class="card" style="background:var(--surface); text-align:center; padding:28px;">
+      <p style="font-size:17px; color:var(--text);">
+        Tested on single-laptop slim stack and two-laptop hotspot setup.<br>
+        Full-node kill on Laptop A leaves sessions active on Laptop B <strong>without re-login</strong>.<br><br>
+        <span style="color:var(--muted); font-size:14px;">Known trade-offs are documented, not hidden. The system meets all latency and availability targets from the NFR table.</span>
+      </p>
+    </div>
+  </div>
+
+</div><!-- /deck -->
+
+<div class="nav">
+  <button onclick="go(-1)">← Prev</button>
+  <span id="slide-counter">1 / 13</span>
+  <button onclick="go(1)">Next →</button>
+</div>
+
+<script>
+  let cur = 0;
+  const slides = document.querySelectorAll('.slide');
+  const total  = slides.length;
+
+  function show(n) {
+    slides[cur].classList.remove('active');
+    cur = (n + total) % total;
+    slides[cur].classList.add('active');
+    document.getElementById('slide-counter').textContent = (cur+1) + ' / ' + total;
+    document.getElementById('progress').style.width = ((cur+1)/total*100) + '%';
+  }
+
+  function go(d) { show(cur + d); }
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown'  || e.key === ' ') go(1);
+    if (e.key === 'ArrowLeft'  || e.key === 'ArrowUp')  go(-1);
+  });
+
+  // Init progress bar
+  document.getElementById('progress').style.width = (1/total*100) + '%';
+</script>
+</body>
+</html>
