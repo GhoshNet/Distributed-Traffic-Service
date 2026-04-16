@@ -20,6 +20,7 @@
     <div class="auth-tabs">
       <button class="auth-tab active" onclick="switchAuth('login')">Sign In</button>
       <button class="auth-tab" onclick="switchAuth('register')">Register</button>
+      <button class="auth-tab" onclick="switchAuth('agent')" title="Register as Enforcement Agent">🛡️ Agent</button>
     </div>
 
     <!-- Login -->
@@ -35,7 +36,7 @@
       <button class="btn btn-primary btn-full" type="submit">Access Terminal</button>
     </form>
 
-    <!-- Register -->
+    <!-- Register (Driver) -->
     <form id="register-form" style="display:none;" onsubmit="register(event)">
       <div class="form-group">
         <label class="form-label">Full Name</label>
@@ -54,6 +55,30 @@
         <input class="form-input" type="password" required>
       </div>
       <button class="btn btn-primary btn-full" type="submit">Create Account</button>
+    </form>
+
+    <!-- Register (Enforcement Agent) -->
+    <form id="agent-form" style="display:none;" onsubmit="registerAgent(event)">
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:14px;padding:8px 10px;background:rgba(138,43,226,0.1);border-left:3px solid var(--primary);border-radius:4px">
+        Enforcement Agent accounts can verify vehicle and driver bookings roadside.
+      </div>
+      <div class="form-group">
+        <label class="form-label">Full Name</label>
+        <input class="form-input" type="text" placeholder="Officer Jane Doe" required>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Email</label>
+        <input class="form-input" type="email" required>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Badge / ID Number</label>
+        <input class="form-input" type="text" placeholder="e.g. BADGE-001" required>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Password</label>
+        <input class="form-input" type="password" required>
+      </div>
+      <button class="btn btn-primary btn-full" type="submit">Create Agent Account</button>
     </form>
   </div>
 </div>
@@ -341,11 +366,27 @@
             </div>
           </div>
 
-          <!-- Result card -->
+          <!-- Result card (also used for access-denied state) -->
           <div id="enf-result" style="display:none">
             <div class="card">
               <div class="card-title" id="enf-result-title">Result</div>
               <div id="enf-result-body"></div>
+            </div>
+          </div>
+
+          <!-- Access denied card (shown when role is insufficient) -->
+          <div id="enf-access-denied" style="display:none">
+            <div class="card" style="border-left:4px solid var(--danger)">
+              <div class="card-title" style="color:var(--danger)">🚫 Access Denied</div>
+              <p style="font-size:13px;color:var(--text-muted);margin:10px 0">
+                This feature requires an <strong style="color:var(--text-main)">Enforcement Agent</strong> account.
+                Your current account role is <strong id="enf-current-role" style="color:var(--warning)">DRIVER</strong>.
+              </p>
+              <p style="font-size:13px;color:var(--text-muted);margin-bottom:16px">
+                To access booking verification, log out and register a new account using the
+                <strong style="color:var(--primary)">🛡️ Agent</strong> tab on the login screen.
+              </p>
+              <button class="btn btn-primary" onclick="logout()">Log Out & Switch Account</button>
             </div>
           </div>
         </div>

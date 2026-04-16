@@ -51,9 +51,12 @@ if (token && user) {
 }
 
 function switchAuth(tab) {
-  document.getElementById('login-form').style.display = tab === 'login' ? 'block' : 'none';
+  document.getElementById('login-form').style.display    = tab === 'login'    ? 'block' : 'none';
   document.getElementById('register-form').style.display = tab === 'register' ? 'block' : 'none';
-  document.querySelectorAll('.auth-tab').forEach((el, i) => el.classList.toggle('active', (tab==='login')===(i===0)));
+  document.getElementById('agent-form').style.display    = tab === 'agent'    ? 'block' : 'none';
+  document.querySelectorAll('.auth-tab').forEach((el, i) => {
+    el.classList.toggle('active', (tab === 'login' && i === 0) || (tab === 'register' && i === 1) || (tab === 'agent' && i === 2));
+  });
 }
 
 async function login(e) {
@@ -88,6 +91,22 @@ function parseErrorDetail(data) {
         }).join('; ');
     }
     return String(detail);
+}
+
+async function registerAgent(e) {
+    e.preventDefault();
+    try {
+        const r = await resilientFetch('/api/users/register/agent', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                full_name: e.target[0].value, email: e.target[1].value,
+                license_number: e.target[2].value, password: e.target[3].value
+            })
+        });
+        if (!r.ok) throw new Error(parseErrorDetail(await r.json()));
+        switchAuth('login');
+        showToast("Agent account created. Please sign in.", "success");
+    } catch(err) { showToast(err.message, "error"); }
 }
 
 async function register(e) {
@@ -1179,6 +1198,7 @@ function enfSwitchTab(tab) {
     document.getElementById('enf-tab-vehicle').classList.toggle('active', tab === 'vehicle');
     document.getElementById('enf-tab-license').classList.toggle('active', tab === 'license');
     document.getElementById('enf-result').style.display = 'none';
+    document.getElementById('enf-access-denied').style.display = 'none';
 }
 
 async function enfLookup(type) {
@@ -1195,10 +1215,15 @@ async function enfLookup(type) {
         ? `/api/enforcement/verify/vehicle/${encodeURIComponent(query)}`
         : `/api/enforcement/verify/license/${encodeURIComponent(query)}`;
 
+    document.getElementById('enf-result').style.display = 'none';
+    document.getElementById('enf-access-denied').style.display = 'none';
+
     try {
         const r = await authFetch(url);
         if (r.status === 403) {
-            showToast('Access denied — Enforcement Agent role required', 'error');
+            const roleEl = document.getElementById('enf-current-role');
+            if (roleEl && user && user.role) roleEl.textContent = user.role;
+            document.getElementById('enf-access-denied').style.display = 'block';
             return;
         }
         const stale = r.headers.get('X-Data-Staleness') === 'STALE';
