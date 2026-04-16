@@ -139,6 +139,7 @@ async def get_all_journeys(db: AsyncSession = Depends(get_db)):
 async def register_peer(payload: dict):
     """Register a peer journey-service URL at runtime and trigger immediate catch-up sync."""
     import asyncio
+    import re
     peer_url = (payload.get("peer_url") or "").rstrip("/")
     if not peer_url:
         from fastapi import HTTPException
@@ -146,6 +147,15 @@ async def register_peer(payload: dict):
     is_new = add_peer(peer_url)
     from .database import async_session
     asyncio.create_task(sync_from_peer(peer_url, async_session))
+
+    # Also register the conflict-service peer URL for booking failover.
+    # The journey peer URL is http://<ip>:8080 (HAProxy); conflict-service
+    # is accessed directly at port 8003, bypassing the gateway.
+    from . import conflict_client
+    match = re.search(r'https?://([^:/]+)', peer_url)
+    if match:
+        conflict_client.register_peer_url(f"http://{match.group(1)}:8003")
+
     return {
         "registered": peer_url,
         "peers": get_peers(),

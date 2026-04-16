@@ -35,6 +35,19 @@ _PEER_URLS: list[str] = [
 TIMEOUT_SECONDS = 30
 
 
+def register_peer_url(url: str) -> None:
+    """
+    Register a conflict-service peer URL at runtime.
+    Called when a new node joins via /internal/journeys/peers/register so that
+    booking failover works for dynamically-discovered peers, not just peers
+    that were set in PEER_CONFLICT_URLS at container start.
+    """
+    url = url.rstrip("/")
+    if url not in _PEER_URLS:
+        _PEER_URLS.append(url)
+        logger.info(f"[conflict-client] registered dynamic peer {url}")
+
+
 def _all_urls() -> list[str]:
     """Return [primary] + peers, deduped, primary always first."""
     seen: set[str] = set()
