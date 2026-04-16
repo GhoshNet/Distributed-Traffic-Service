@@ -1,0 +1,892 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Journey Booking System — How It Works</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #22263a;
+    --border: #2e3354;
+    --accent: #6366f1;
+    --cyan: #22d3ee;
+    --green: #10b981;
+    --amber: #f59e0b;
+    --red: #f43f5e;
+    --text: #e2e8f0;
+    --muted: #8892a4;
+    --dim: #555e72;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    font-size: 16px;
+    line-height: 1.7;
+  }
+
+  /* ── Layout ─────────────────────────────────────── */
+  .page { max-width: 900px; margin: 0 auto; padding: 60px 32px 120px; }
+
+  /* ── Nav sidebar ────────────────────────────────── */
+  .sidebar {
+    position: fixed; top: 0; left: 0; bottom: 0; width: 220px;
+    background: var(--surface); border-right: 1px solid var(--border);
+    padding: 28px 0; overflow-y: auto; z-index: 10;
+  }
+  .sidebar-title { font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--dim); padding: 0 20px 12px; }
+  .sidebar a {
+    display: block; padding: 6px 20px; font-size: 13px; color: var(--muted);
+    text-decoration: none; border-left: 2px solid transparent; transition: all 0.15s;
+  }
+  .sidebar a:hover { color: var(--text); background: rgba(255,255,255,0.03); }
+  .sidebar a.active { color: var(--accent); border-left-color: var(--accent); background: rgba(99,102,241,0.06); }
+  .sidebar-group { margin-bottom: 8px; }
+  .sidebar-group-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--dim); padding: 12px 20px 4px; }
+
+  @media (max-width: 1100px) { .sidebar { display: none; } .page { margin: 0 auto; } }
+
+  .main { margin-left: 220px; }
+  @media (max-width: 1100px) { .main { margin-left: 0; } }
+
+  /* ── Typography ─────────────────────────────────── */
+  h1 { font-size: 2.4rem; font-weight: 800; line-height: 1.15; margin-bottom: 16px; }
+  h1 em { font-style: normal; color: var(--accent); }
+  h2 {
+    font-size: 1.6rem; font-weight: 700; margin: 60px 0 18px;
+    padding-top: 60px; border-top: 1px solid var(--border);
+    color: var(--text);
+  }
+  h2:first-of-type { border-top: none; padding-top: 0; }
+  h2 .num { color: var(--dim); font-weight: 400; font-size: 1rem; margin-right: 8px; }
+  h3 { font-size: 1.1rem; font-weight: 700; margin: 28px 0 10px; color: var(--cyan); }
+  p { color: var(--muted); margin-bottom: 14px; }
+  p:last-child { margin-bottom: 0; }
+  strong { color: var(--text); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+    font-size: 0.85em; background: rgba(255,255,255,0.08);
+    padding: 2px 6px; border-radius: 4px; color: var(--cyan);
+  }
+  pre {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 16px 20px; overflow-x: auto;
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+    font-size: 0.83rem; color: var(--cyan); line-height: 1.6; margin: 16px 0;
+  }
+
+  /* ── Lead paragraph ─────────────────────────────── */
+  .lead { font-size: 1.05rem; color: var(--text); line-height: 1.75; margin-bottom: 28px; }
+
+  /* ── Callout boxes ──────────────────────────────── */
+  .callout {
+    border-left: 3px solid; border-radius: 0 8px 8px 0;
+    padding: 14px 18px; margin: 20px 0; background: var(--surface);
+  }
+  .callout.blue   { border-color: var(--accent); background: rgba(99,102,241,0.07); }
+  .callout.cyan   { border-color: var(--cyan);   background: rgba(34,211,238,0.07); }
+  .callout.green  { border-color: var(--green);  background: rgba(16,185,129,0.07); }
+  .callout.amber  { border-color: var(--amber);  background: rgba(245,158,11,0.07); }
+  .callout.red    { border-color: var(--red);    background: rgba(244,63,94,0.07);  }
+  .callout strong { display: block; margin-bottom: 4px; }
+  .callout p      { margin: 0; font-size: 0.92rem; }
+
+  /* ── Two-column grid ────────────────────────────── */
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+  .cols-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; margin: 20px 0; }
+  @media (max-width: 700px) { .cols, .cols-3 { grid-template-columns: 1fr; } }
+
+  /* ── Cards ──────────────────────────────────────── */
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 18px 20px;
+  }
+  .card h3 { margin-top: 0; }
+
+  /* ── Service list ───────────────────────────────── */
+  .svc-list { display: flex; flex-direction: column; gap: 10px; margin: 20px 0; }
+  .svc-item {
+    display: grid; grid-template-columns: 180px 1fr;
+    gap: 0; border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+  }
+  .svc-left {
+    background: var(--surface2); padding: 16px 18px;
+    border-right: 1px solid var(--border);
+  }
+  .svc-name { font-weight: 700; font-size: 1rem; margin-bottom: 4px; }
+  .svc-meta { font-size: 12px; color: var(--dim); }
+  .svc-right { background: var(--surface); padding: 16px 18px; }
+  .svc-right p { font-size: 0.9rem; margin: 0; }
+
+  /* ── Step list ──────────────────────────────────── */
+  .step-list { list-style: none; margin: 20px 0; display: flex; flex-direction: column; gap: 0; }
+  .step-list li {
+    display: flex; gap: 16px;
+    padding: 16px 0; border-bottom: 1px solid var(--border);
+  }
+  .step-list li:last-child { border-bottom: none; }
+  .step-num {
+    width: 30px; height: 30px; border-radius: 50%;
+    background: var(--accent); color: white; font-weight: 700; font-size: 13px;
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0; margin-top: 2px;
+  }
+  .step-body .step-title { font-weight: 700; color: var(--text); margin-bottom: 4px; font-size: 0.95rem; }
+  .step-body p { font-size: 0.9rem; margin: 0; }
+
+  /* ── Check list ─────────────────────────────────── */
+  .check-list { list-style: none; display: flex; flex-direction: column; gap: 8px; margin: 14px 0; }
+  .check-list li { display: flex; gap: 10px; font-size: 0.92rem; color: var(--muted); align-items: flex-start; }
+  .check-list li .ico { flex-shrink: 0; margin-top: 2px; font-style: normal; }
+  .ico-pass  { color: var(--green); }
+  .ico-warn  { color: var(--amber); }
+  .ico-fail  { color: var(--red);   }
+
+  /* ── Table ──────────────────────────────────────── */
+  table { width: 100%; border-collapse: collapse; margin: 20px 0; font-size: 0.88rem; }
+  th { text-align: left; padding: 10px 14px; background: var(--surface2); color: var(--accent); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.5px; }
+  td { padding: 10px 14px; border-top: 1px solid var(--border); color: var(--muted); vertical-align: top; }
+  td:first-child { color: var(--text); font-weight: 600; }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+
+  /* ── Divider ─────────────────────────────────────── */
+  hr { border: none; border-top: 1px solid var(--border); margin: 40px 0; }
+
+  /* ── State machine ──────────────────────────────── */
+  .states { display: flex; align-items: center; gap: 0; flex-wrap: wrap; margin: 16px 0; }
+  .state {
+    padding: 10px 18px; border-radius: 8px; font-weight: 700; font-size: 0.88rem; text-align: center;
+  }
+  .state-arrow { padding: 0 10px; color: var(--dim); display: flex; flex-direction: column; align-items: center; }
+  .state-arrow small { font-size: 11px; color: var(--dim); white-space: nowrap; }
+
+  /* ── Flow diagram (pure CSS) ────────────────────── */
+  .flow { display: flex; flex-direction: column; gap: 0; margin: 20px 0; }
+  .flow-row { display: flex; align-items: stretch; }
+  .flow-box {
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px 16px; background: var(--surface);
+    font-size: 0.88rem; min-width: 120px;
+  }
+  .flow-arrow { display: flex; align-items: center; padding: 0 10px; color: var(--dim); font-size: 1.2rem; }
+  .flow-down { width: 2px; background: var(--border); margin: 0 auto; height: 20px; }
+
+  /* ── Tag/pill ────────────────────────────────────── */
+  .tag {
+    display: inline-block; padding: 2px 9px; border-radius: 20px;
+    font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
+    margin: 2px 2px;
+  }
+  .tag-blue  { background: rgba(99,102,241,0.15); color: #a5b4fc; }
+  .tag-cyan  { background: rgba(34,211,238,0.15); color: #67e8f9; }
+  .tag-green { background: rgba(16,185,129,0.15); color: #6ee7b7; }
+  .tag-amber { background: rgba(245,158,11,0.15); color: #fcd34d; }
+  .tag-red   { background: rgba(244,63,94,0.15);  color: #fda4af; }
+  .tag-gray  { background: rgba(255,255,255,0.07); color: var(--muted); }
+
+  /* ── Hero ────────────────────────────────────────── */
+  .hero { padding: 48px 0 40px; border-bottom: 1px solid var(--border); margin-bottom: 48px; }
+  .hero-label { font-size: 12px; text-transform: uppercase; letter-spacing: 2px; color: var(--accent); margin-bottom: 14px; }
+  .hero-desc { font-size: 1.1rem; color: var(--muted); max-width: 700px; margin-top: 16px; line-height: 1.75; }
+  .hero-tags { margin-top: 20px; }
+
+  /* ── Diagram wrapper ─────────────────────────────── */
+  .diagram { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin: 20px 0; }
+  .diagram svg { display: block; width: 100%; }
+  .diagram-caption { text-align: center; font-size: 12px; color: var(--dim); margin-top: 10px; }
+</style>
+</head>
+<body>
+
+<!-- ── Sidebar nav ───────────────────────────────── -->
+<nav class="sidebar">
+  <div class="sidebar-title">Contents</div>
+  <div class="sidebar-group">
+    <a href="#overview">Overview</a>
+    <a href="#services">The 6 Services</a>
+    <a href="#infra">Infrastructure</a>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Core Flows</div>
+    <a href="#booking">How a Booking Works</a>
+    <a href="#conflict">Conflict Detection</a>
+    <a href="#outbox">Transactional Outbox</a>
+    <a href="#notifications">Notifications</a>
+    <a href="#enforcement">Enforcement</a>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Resilience</div>
+    <a href="#circuit">Circuit Breaker</a>
+    <a href="#sentinel">Redis Sentinel</a>
+    <a href="#replication">Postgres Replication</a>
+    <a href="#multinode">Multi-Node Design</a>
+    <a href="#failover">Client Failover</a>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Decisions</div>
+    <a href="#tradeoffs">Design Choices</a>
+    <a href="#limitations">Limitations</a>
+  </div>
+</nav>
+
+<div class="main">
+<div class="page">
+
+<!-- ── Hero ───────────────────────────────────────── -->
+<div class="hero">
+  <div class="hero-label">CS7NS6 Distributed Systems · Group J</div>
+  <h1>Journey Booking System<br><em>How It Works</em></h1>
+  <p class="hero-desc">
+    A distributed, fault-tolerant system where drivers pre-book road journeys before setting off. This document explains every part of the system — what it does, why it was designed that way, and what tradeoffs were made.
+  </p>
+  <div class="hero-tags">
+    <span class="tag tag-blue">Microservices</span>
+    <span class="tag tag-cyan">Saga Pattern</span>
+    <span class="tag tag-green">Transactional Outbox</span>
+    <span class="tag tag-amber">Circuit Breaker</span>
+    <span class="tag tag-red">SERIALIZABLE Isolation</span>
+    <span class="tag tag-gray">Redis Sentinel</span>
+    <span class="tag tag-blue">Active-Active</span>
+    <span class="tag tag-cyan">RabbitMQ</span>
+    <span class="tag tag-green">WAL Replication</span>
+  </div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════
+     1. OVERVIEW
+═══════════════════════════════════════════════════ -->
+<h2 id="overview"><span class="num">1</span>Overview — What is this system?</h2>
+
+<p class="lead">Imagine a country where no driver can get in their car without having a pre-approved booking. The booking tells the system where you're going, when you're leaving, what vehicle you're driving, and what roads you'll use. An enforcement officer can check your plate at the roadside and instantly know if you're supposed to be there.</p>
+
+<p>This system handles that. Its core challenge is: <strong>how do you check and reserve a road slot atomically, across multiple servers, without creating double bookings — even when parts of the system are down?</strong></p>
+
+<div class="cols">
+  <div class="callout blue">
+    <strong>What drivers can do</strong>
+    <p>Register an account, add their vehicle, book a journey (specifying origin, destination, departure time, route), receive a real-time confirmation or rejection, cancel a booking, check their points balance.</p>
+  </div>
+  <div class="callout green">
+    <strong>What enforcement agents can do</strong>
+    <p>Look up any vehicle plate or driving licence number and get a sub-second response: is this vehicle supposed to be on the road right now? The system returns the journey details if valid, or "no valid booking" if not.</p>
+  </div>
+</div>
+
+<h3>Scale the system is designed for</h3>
+<p>1 million active drivers nationally. Assuming 30% book during a 30-minute morning peak, that's roughly <strong>167 bookings per second</strong>. Our two-laptop demo targets 50 bookings/second per node. Enforcement checks are high-frequency reads and must return in under 200ms — ideally under 20ms from cache.</p>
+
+
+<!-- ══════════════════════════════════════════════════
+     2. THE 6 SERVICES
+═══════════════════════════════════════════════════ -->
+<h2 id="services"><span class="num">2</span>The 6 Services</h2>
+
+<p class="lead">The system is split into six independent services. Each one owns its own database and can fail, restart, or scale without directly affecting the others. They communicate via REST APIs for real-time operations and via a message broker (RabbitMQ) for background work.</p>
+
+<div class="svc-list">
+
+  <div class="svc-item">
+    <div class="svc-left">
+      <div class="svc-name" style="color:#a5b4fc;">👤 User Service</div>
+      <div class="svc-meta">Python (FastAPI) · Port 8001</div>
+      <div class="svc-meta" style="margin-top:6px;">DB: <code>users_db</code></div>
+    </div>
+    <div class="svc-right">
+      <p>Handles registration, login, and vehicle management. Passwords are hashed with bcrypt. On login, it issues a <strong>JWT token</strong> signed with a shared secret — the same secret is used on every node, so a token issued on Laptop A is valid on Laptop B with no re-login.</p>
+      <p style="margin-top:8px;">Read queries go to a Postgres replica; writes go to the primary. Before inserting a new user, it acquires a distributed lock across all peer nodes to prevent two nodes simultaneously accepting the same email address.</p>
+    </div>
+  </div>
+
+  <div class="svc-item">
+    <div class="svc-left">
+      <div class="svc-name" style="color:#67e8f9;">🗺 Journey Service</div>
+      <div class="svc-meta">Python (FastAPI) · Port 8002</div>
+      <div class="svc-meta" style="margin-top:6px;">DB: <code>journeys_db</code></div>
+    </div>
+    <div class="svc-right">
+      <p>The most complex service — it orchestrates the booking <strong>saga</strong>. When a driver books, this service coordinates the entire flow: checking for duplicates, calling the Conflict service to reserve a road slot, saving the confirmed booking, and writing an event for downstream services. It also runs background tasks: a lifecycle scheduler that transitions journeys from CONFIRMED → IN_PROGRESS → COMPLETED, and an outbox drainer that publishes events to RabbitMQ.</p>
+    </div>
+  </div>
+
+  <div class="svc-item">
+    <div class="svc-left">
+      <div class="svc-name" style="color:#fda4af;">⚡ Conflict Service</div>
+      <div class="svc-meta">Go · Port 8003</div>
+      <div class="svc-meta" style="margin-top:6px;">DB: <code>conflicts_db</code></div>
+    </div>
+    <div class="svc-right">
+      <p>The gatekeeper. When asked "can this booking proceed?", it runs three checks atomically inside a single <strong>SERIALIZABLE database transaction with SELECT FOR UPDATE</strong>: (1) is the driver already booked at this time? (2) is the vehicle already booked? (3) is the road at capacity? All three must pass for the booking to be approved.</p>
+      <p style="margin-top:8px;">Road capacity is modelled as a grid of ~1km cells, each with a counter per 30-minute time slot. The lock only covers the cells the route actually passes through, so two bookings on different roads never contend.</p>
+    </div>
+  </div>
+
+  <div class="svc-item">
+    <div class="svc-left">
+      <div class="svc-name" style="color:#fcd34d;">🔔 Notification Service</div>
+      <div class="svc-meta">Go · Port 8004</div>
+      <div class="svc-meta" style="margin-top:6px;">Store: Redis</div>
+    </div>
+    <div class="svc-right">
+      <p>Listens for booking events from RabbitMQ and pushes them to the driver's browser in real-time via <strong>WebSocket</strong>. The connection map is held in memory (one entry per logged-in user). Notification history is stored in Redis as a capped list (50 entries, 7-day TTL) so drivers can see missed notifications after a reconnect.</p>
+      <p style="margin-top:8px;">It deduplicates messages using Redis SETNX on the message ID, so redelivered events are silently ignored. Unprocessable messages go to a dead-letter queue (DLQ) with a 24-hour TTL for inspection.</p>
+    </div>
+  </div>
+
+  <div class="svc-item">
+    <div class="svc-left">
+      <div class="svc-name" style="color:#6ee7b7;">🚔 Enforcement Service</div>
+      <div class="svc-meta">Python (FastAPI) · Port 8005</div>
+      <div class="svc-meta" style="margin-top:6px;">Store: Redis + Journey API</div>
+    </div>
+    <div class="svc-right">
+      <p>Built for speed. When an enforcement agent queries a vehicle plate, it checks <strong>Redis first</strong> (sub-20ms). On a cache miss, it falls back to calling the Journey Service REST API (under 100ms). The cache entry is populated when a booking is confirmed (via RabbitMQ event) and invalidated when a journey is cancelled or completed.</p>
+      <p style="margin-top:8px;">Licence-to-user-ID mappings are cached for 24 hours so licence lookups don't hit the User Service every time.</p>
+    </div>
+  </div>
+
+  <div class="svc-item">
+    <div class="svc-left">
+      <div class="svc-name" style="color:#d8b4fe;">📊 Analytics Service</div>
+      <div class="svc-meta">Go · Port 8006</div>
+      <div class="svc-meta" style="margin-top:6px;">DB: <code>analytics_db</code> + Redis</div>
+    </div>
+    <div class="svc-right">
+      <p>Records every booking event to both Postgres (permanent audit trail) and Redis counters (real-time stats). An hourly rollup goroutine aggregates the previous hour's data into a summary table. It also serves as the system's health hub — its <code>/api/analytics/health/services</code> endpoint probes all six services in parallel and returns a combined status report. Postgres replica lag is exposed at <code>/api/analytics/replica-lag</code>.</p>
+    </div>
+  </div>
+
+</div>
+
+<div class="callout amber">
+  <strong>Why split into six services?</strong>
+  <p>Each service can be updated or restarted independently. A bug in Analytics doesn't affect booking. Conflict detection (which needs Go's goroutines for tight locking) can be scaled separately from User registration (which is write-infrequent). Teams can work in parallel without stepping on each other's code.</p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════
+     3. INFRASTRUCTURE
+═══════════════════════════════════════════════════ -->
+<h2 id="infra"><span class="num">3</span>Infrastructure</h2>
+
+<p class="lead">Behind the six services sits a supporting layer of databases, caches, a message broker, and load balancers. Here's what each piece does and why it was chosen.</p>
+
+<h3>PostgreSQL — one database per service</h3>
+<p>Each service has its own Postgres database running as a <strong>primary + replica pair</strong>. The primary handles all writes; the replica handles reads. This spreads load and means the replica can serve enforcement/analytics queries without slowing down booking writes.</p>
+<p>The Conflict service uses <strong>SERIALIZABLE isolation</strong> for its check-and-reserve operation. All other services use the default READ COMMITTED — SERIALIZABLE everywhere would cause unnecessary lock contention for simple CRUD.</p>
+
+<h3>Redis + Sentinel — fast cache with automatic failover</h3>
+<p>Redis is used for three things: (1) the Enforcement service's vehicle lookup cache (sub-millisecond reads), (2) message deduplication keys in consumers (Redis SETNX), and (3) Notification history lists per user.</p>
+<p>Three <strong>Sentinel instances</strong> watch the Redis primary. If the primary dies, they vote (quorum = 2-of-3) and promote the replica automatically, usually within ~15 seconds. Services auto-reconnect — there's no human intervention needed.</p>
+
+<h3>RabbitMQ — async event delivery</h3>
+<p>After a booking is confirmed, four things need to happen: the driver gets notified, the analytics counters update, the enforcement cache gets populated, and the conflict slot gets replicated. We don't want any of these to slow down the booking response. So they're done <strong>asynchronously</strong> via a RabbitMQ topic exchange called <code>journey_events</code>.</p>
+<p>Each consumer has its own durable queue. If a consumer crashes, messages queue up and are delivered when it restarts — nothing is lost. Each queue also has a <strong>dead-letter exchange (DLX)</strong>: if processing a message fails repeatedly, the message gets moved to a dead-letter queue where it sits for 24 hours for manual inspection.</p>
+
+<h3>HAProxy + nginx — the gateway</h3>
+<p>All browser traffic enters through <strong>HAProxy</strong> on port 8080, which load-balances across two nginx instances (in full-stack mode). nginx handles URL routing (which request goes to which service), rate limiting, and per-request DNS resolution.</p>
+<p>Rate limits: authentication endpoints (5 req/s, burst 10), booking endpoints (10 req/s, burst 20), general (30 req/s). Per-request DNS is important — without it, nginx caches container IPs and breaks after a container restart.</p>
+
+<table>
+  <thead><tr><th>Component</th><th>Count</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td>Application services</td><td>6</td><td>User, Journey, Conflict, Notification, Enforcement, Analytics</td></tr>
+    <tr><td>PostgreSQL pairs</td><td>4 × 2 = 8</td><td>One primary + replica per service (User, Journey, Conflict, Analytics)</td></tr>
+    <tr><td>Redis instances</td><td>2</td><td>Primary + replica; Sentinel manages failover</td></tr>
+    <tr><td>Redis Sentinels</td><td>3</td><td>Watch Redis primary; vote to promote replica on failure</td></tr>
+    <tr><td>RabbitMQ nodes</td><td>3</td><td>Clustered for HA (stable across physical machines)</td></tr>
+    <tr><td>nginx instances</td><td>2</td><td>URL routing + rate limiting</td></tr>
+    <tr><td>HAProxy</td><td>1</td><td>Load balancer across nginx instances</td></tr>
+    <tr><td>Frontend</td><td>1</td><td>React browser app</td></tr>
+    <tr><td><strong>Total (full stack)</strong></td><td><strong>26</strong></td><td>Slim profile (single laptop): 12 containers</td></tr>
+  </tbody>
+</table>
+
+
+<!-- ══════════════════════════════════════════════════
+     4. HOW A BOOKING WORKS
+═══════════════════════════════════════════════════ -->
+<h2 id="booking"><span class="num">4</span>How a Booking Works — The Saga Pattern</h2>
+
+<p class="lead">When a driver books a journey, the Journey service orchestrates a sequence of steps called a <strong>saga</strong>. Each step either succeeds and moves forward, or fails and the whole thing is rejected. Here's exactly what happens:</p>
+
+<ul class="step-list">
+  <li>
+    <div class="step-num">1</div>
+    <div class="step-body">
+      <div class="step-title">Idempotency check</div>
+      <p>The driver's request includes an <code>idempotency_key</code>. If this exact key has been seen before, the Journey service returns the cached result immediately — no processing. This means a driver can retry a request after a network failure without accidentally creating two bookings.</p>
+    </div>
+  </li>
+  <li>
+    <div class="step-num">2</div>
+    <div class="step-body">
+      <div class="step-title">Insert journey with status PENDING</div>
+      <p>A journey row is created in the database with status <strong>PENDING</strong> before anything else happens. This creates a record even if the service crashes mid-way through the saga.</p>
+    </div>
+  </li>
+  <li>
+    <div class="step-num">3</div>
+    <div class="step-body">
+      <div class="step-title">Call the Conflict service to check and reserve the slot</div>
+      <p>The Journey service calls <code>POST /api/conflicts/check</code> on the Conflict service. This call is wrapped in a <strong>circuit breaker</strong> — if the Conflict service has been failing, the circuit opens and the booking fails fast instead of hanging for 30 seconds. If the local Conflict service is down, it automatically tries peer nodes on other laptops.</p>
+      <p style="margin-top:8px;">Inside the Conflict service, a single SERIALIZABLE transaction runs three checks: driver overlap, vehicle overlap, and road capacity. If anything conflicts, it returns REJECTED with a reason. If everything is clear, it reserves the slot.</p>
+    </div>
+  </li>
+  <li>
+    <div class="step-num">4</div>
+    <div class="step-body">
+      <div class="step-title">Write journey + outbox event in a single database transaction</div>
+      <p>If the conflict check passed, the Journey service updates the journey to <strong>CONFIRMED</strong> and writes an outbox event row — both in the <em>same</em> database transaction. Either both are committed or neither is. This is the key to the outbox pattern (explained in the next section).</p>
+    </div>
+  </li>
+  <li>
+    <div class="step-num">5</div>
+    <div class="step-body">
+      <div class="step-title">Return CONFIRMED to the driver (~100–250ms)</div>
+      <p>The synchronous part of the saga is done. The driver's browser shows "Booking confirmed." Everything after this happens in the background.</p>
+    </div>
+  </li>
+  <li>
+    <div class="step-num">6</div>
+    <div class="step-body">
+      <div class="step-title">Background: outbox drainer publishes the event to RabbitMQ</div>
+      <p>A background task polls the <code>outbox_events</code> table every 2 seconds for rows where <code>published = false</code>. It publishes each one to RabbitMQ and marks it <code>published = true</code>. If RabbitMQ is down, rows accumulate and drain when it comes back up.</p>
+    </div>
+  </li>
+  <li>
+    <div class="step-num">7</div>
+    <div class="step-body">
+      <div class="step-title">Downstream services consume the event</div>
+      <p>Notification service pushes a WebSocket message to the driver's browser. Analytics service increments its counters. Enforcement service adds the booking to its Redis cache. Each consumer deduplicates using Redis SETNX — if RabbitMQ redelivers the same message, it's silently ignored.</p>
+    </div>
+  </li>
+</ul>
+
+<div class="callout blue">
+  <strong>What about Two-Phase Commit (2PC)?</strong>
+  <p>The system also supports a <code>?mode=2pc</code> query parameter that switches to a stricter protocol. In 2PC, the PREPARE phase tentatively reserves the slot without committing. Only if the Journey service can successfully complete its own write does it send COMMIT. On any failure, it sends explicit ABORT to release the slot. This gives stronger atomicity but is slower — the slot is held between PREPARE and COMMIT. The saga mode is the default because it's faster and simpler, and 2PC is available to demonstrate the concept.</p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════
+     5. CONFLICT DETECTION
+═══════════════════════════════════════════════════ -->
+<h2 id="conflict"><span class="num">5</span>Conflict Detection</h2>
+
+<p class="lead">The Conflict service's job is to answer one question: "can this booking proceed without conflicting with an existing one?" It must answer correctly even if two drivers are booking simultaneously.</p>
+
+<h3>The three checks</h3>
+<div class="cols">
+  <div class="callout red">
+    <strong>① Driver overlap</strong>
+    <p>Does this driver already have a CONFIRMED journey that overlaps in time with the requested slot?</p>
+  </div>
+  <div class="callout red">
+    <strong>② Vehicle overlap</strong>
+    <p>Is this vehicle registration already assigned to a CONFIRMED journey that overlaps in time?</p>
+  </div>
+</div>
+<div class="callout red">
+  <strong>③ Road capacity</strong>
+  <p>Is the road segment at maximum capacity for this time slot? The road is divided into a grid of ~1km cells. The booking's route is traced through the grid, and each traversed cell's slot counter is checked and incremented. If any cell is full, the booking is rejected.</p>
+</div>
+
+<h3>Why SERIALIZABLE + SELECT FOR UPDATE?</h3>
+<p>All three checks run inside <strong>one SERIALIZABLE database transaction with SELECT FOR UPDATE</strong>. This is intentional and important.</p>
+<p>Consider the alternative: with the default READ COMMITTED isolation, two concurrent bookings for the same slot could both read "capacity = 1 remaining", both decide they're fine to proceed, and both commit — resulting in over-capacity. SERIALIZABLE prevents this: the second transaction either sees the first one's reservation as already committed (and rejects), or it detects a conflict and retries.</p>
+
+<div class="callout amber">
+  <strong>The cost of SERIALIZABLE</strong>
+  <p>Higher lock contention than READ COMMITTED. However, we only use SERIALIZABLE in the Conflict service — all other services use the default. The lock scope is narrow (just the grid cells the route passes through), and conflict checks are fast (~5ms), so contention is minimal in practice.</p>
+</div>
+
+<h3>The grid-cell road model</h3>
+<p>The road network is approximated as a grid with 0.01° resolution — roughly 1km per cell at Ireland's latitude. Each cell has a capacity limit per 30-minute time slot. When a booking is made, its route is traced through the grid and each traversed cell's counter is incremented atomically.</p>
+<p>This design exploits spatial locality: two bookings on physically separate roads will traverse different cells and <em>never contend</em>, even if they're scheduled for the same time. False conflicts (two routes that are geographically close but physically separate) are avoided by using the actual road waypoints to trace cells, not just straight-line interpolation.</p>
+
+
+<!-- ══════════════════════════════════════════════════
+     6. TRANSACTIONAL OUTBOX
+═══════════════════════════════════════════════════ -->
+<h2 id="outbox"><span class="num">6</span>The Transactional Outbox Pattern</h2>
+
+<p class="lead">This pattern solves a fundamental distributed systems problem: <strong>how do you update a database and send a message without losing one if the service crashes between the two?</strong></p>
+
+<h3>The problem it solves</h3>
+<p>The naive approach: (1) write CONFIRMED to the database, (2) publish to RabbitMQ. But what if the process crashes after step 1 and before step 2? The booking is confirmed in the DB, but Notification never fires, Enforcement cache is never populated, Analytics never counts it. Silent inconsistency — no error, just missing data downstream.</p>
+
+<h3>The solution</h3>
+<p>Instead of publishing to RabbitMQ directly, we write an event row to an <code>outbox_events</code> table in the <strong>same database transaction</strong> as the journey row:</p>
+
+<pre>BEGIN TRANSACTION
+  UPDATE journeys SET status = 'CONFIRMED' WHERE id = ?
+  INSERT INTO outbox_events (routing_key, payload, published) VALUES ('journey.confirmed', {...}, false)
+COMMIT</pre>
+
+<p>Either both rows are written or neither is. The outbox event is now durable — it survives any crash. A separate background task polls the outbox table every 2 seconds for rows where <code>published = false</code>, publishes them to RabbitMQ, and marks them <code>published = true</code>.</p>
+
+<div class="callout green">
+  <strong>What happens during a RabbitMQ outage</strong>
+  <p>Bookings continue to be confirmed normally. Outbox rows accumulate in the database with <code>published = false</code>. The driver gets their confirmation immediately. When RabbitMQ comes back up, the background drainer publishes everything that accumulated — Notification, Analytics, and Enforcement all catch up automatically. No manual intervention needed.</p>
+</div>
+
+<div class="callout amber">
+  <strong>At-least-once delivery</strong>
+  <p>If the drainer publishes an event but crashes before marking it <code>published = true</code>, the event will be published again on restart. This means messages can be delivered more than once. Every consumer handles this by doing a Redis <code>SETNX</code> check on the message ID — if the key already exists, the message was already processed and is silently acknowledged.</p>
+</div>
+
+<div class="callout blue">
+  <strong>What could be improved</strong>
+  <p>The 2-second polling interval adds latency between booking confirmation and downstream updates. A better approach would use <strong>PostgreSQL LISTEN/NOTIFY</strong> — the database would push a signal to the drainer the instant a new outbox row is inserted, reducing lag from ~2 seconds to milliseconds.</p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════
+     7. NOTIFICATIONS
+═══════════════════════════════════════════════════ -->
+<h2 id="notifications"><span class="num">7</span>Real-Time Notifications</h2>
+
+<p>After a booking event is published to RabbitMQ, the Notification service picks it up and pushes it to the driver's browser via <strong>WebSocket</strong>. The connection is established when the driver logs in and stays open as long as the tab is open.</p>
+
+<p>The WebSocket registry is a simple in-memory map: <code>user_id → [list of open connections]</code>, protected by a read-write mutex. If a driver has multiple browser tabs open, all of them receive the notification simultaneously.</p>
+
+<h3>Notification history</h3>
+<p>Notifications are also stored in Redis as a capped list per user: max 50 entries, 7-day TTL. Each write is a pipelined LPUSH (add to front) + LTRIM (trim to 50) + EXPIRE (reset TTL). Drivers can fetch their history via <code>GET /api/notifications/</code> in case they missed live notifications.</p>
+
+<div class="callout amber">
+  <strong>Known limitation: in-memory connection registry</strong>
+  <p>If the Notification service restarts, all WebSocket connections drop and clients must reconnect. There's no shared connection state. The Redis history ensures no notification <em>content</em> is lost, only the live push. To scale Notification horizontally, you'd need Redis Pub/Sub as a shared fan-out mechanism instead of an in-memory map.</p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════
+     8. ENFORCEMENT VERIFICATION
+═══════════════════════════════════════════════════ -->
+<h2 id="enforcement"><span class="num">8</span>Enforcement Verification</h2>
+
+<p class="lead">Enforcement agents need to check a vehicle plate or driving licence at the roadside — quickly. The target is under 200ms, and ideally under 20ms. This is achieved with a two-layer lookup.</p>
+
+<h3>Layer 1: Redis cache (sub-20ms)</h3>
+<p>When a booking is confirmed, the Journey service (via the outbox + RabbitMQ) triggers the Enforcement service to store the booking in Redis under two keys: <code>active_journey:vehicle:{plate}</code> and <code>active_journey:user:{user_id}</code>. The TTL is set to the journey's estimated arrival time + 1 hour.</p>
+<p>On an enforcement check, Redis is hit first. If the entry exists and the journey is currently within its time window (departure ≤ now + 30 min, arrival ≥ now), it's returned immediately.</p>
+
+<h3>Layer 2: Journey Service REST fallback</h3>
+<p>On a cache miss (cache cold, TTL expired, or Redis down), the Enforcement service calls <code>GET /api/journeys/vehicle/{plate}/active</code> on the Journey service. On a successful fallback hit, the cache is populated for future requests.</p>
+
+<h3>Licence lookups</h3>
+<p>When an agent queries by driving licence number, the service first resolves the licence to a user ID (via the User service), then looks up the user's active journey. The licence→user_id mapping is cached in Redis for 24 hours so the User service isn't hit on every check.</p>
+
+<div class="callout green">
+  <strong>During a network partition</strong>
+  <p>If the Journey service is unreachable, enforcement continues from the Redis cache. Responses include <code>X-Cache-Stale: true</code> and <code>X-Partition-Status: journey-service: PARTITIONED</code> headers to alert the agent that the data may be slightly outdated. This is a deliberate availability-over-consistency tradeoff for roadside enforcement — showing a stale "valid" result is safer than blocking the check entirely.</p>
+</div>
+
+<div class="callout amber">
+  <strong>Known limitation: cold cache on startup</strong>
+  <p>After a service restart, the Redis cache is empty. Every enforcement check pays the full REST fallback cost until the cache warms up via incoming booking events. There's a manual endpoint (<code>POST /admin/recovery/rebuild-enforcement-cache</code>) that rebuilds the cache from the DB, but it's not called automatically on boot.</p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════
+     9. CIRCUIT BREAKER
+═══════════════════════════════════════════════════ -->
+<h2 id="circuit"><span class="num">9</span>Circuit Breaker</h2>
+
+<p class="lead">When the Conflict service is down, we don't want booking requests to hang for 30 seconds waiting for a timeout. The circuit breaker <strong>fails fast</strong> — after a few failures it stops trying for a while, protecting the system from cascading slowdowns.</p>
+
+<h3>How it works</h3>
+<div class="states">
+  <div class="state" style="background:rgba(16,185,129,0.1); border:1.5px solid var(--green); color:#6ee7b7;">CLOSED<br><small style="font-size:11px;">calls go through</small></div>
+  <div class="state-arrow"><span>→</span><small>3 failures</small></div>
+  <div class="state" style="background:rgba(244,63,94,0.1); border:1.5px solid var(--red); color:#fda4af;">OPEN<br><small style="font-size:11px;">fail immediately</small></div>
+  <div class="state-arrow"><span>→</span><small>30s timeout</small></div>
+  <div class="state" style="background:rgba(245,158,11,0.1); border:1.5px solid var(--amber); color:#fcd34d;">HALF-OPEN<br><small style="font-size:11px;">one probe call</small></div>
+  <div class="state-arrow"><span>→</span><small>success</small></div>
+  <div class="state" style="background:rgba(16,185,129,0.1); border:1.5px solid var(--green); color:#6ee7b7;">CLOSED<br><small style="font-size:11px;">recovered</small></div>
+</div>
+
+<ul class="check-list" style="margin-top: 16px;">
+  <li><i class="ico ico-pass">●</i><strong style="color:var(--green);">CLOSED</strong> — Normal operation. All calls go through. Failure counter increments on each error.</li>
+  <li><i class="ico ico-fail">●</i><strong style="color:var(--red);">OPEN</strong> — After 3 consecutive failures, the circuit opens. All calls return an error immediately without making any network request. After 30 seconds, moves to HALF-OPEN.</li>
+  <li><i class="ico ico-warn">●</i><strong style="color:var(--amber);">HALF-OPEN</strong> — One probe call is allowed through. If it succeeds, circuit closes (recovered). If it fails, circuit re-opens for another 30 seconds. This prevents hammering a service that's still recovering.</li>
+</ul>
+
+<h3>Per-URL circuit breakers</h3>
+<p>We have <strong>one independent circuit breaker per endpoint URL</strong>, not a single global one. This is critical: if the local Conflict service crashes, its circuit opens — but the circuit breaker for the peer Conflict service on Laptop B is unaffected. Booking requests automatically route to the peer, which still has a fresh, closed circuit.</p>
+
+<p>The failover chain in <code>conflict_client.py</code>:</p>
+<pre>1. Try local conflict-service  (circuit: CLOSED → try it)
+2. Try peer conflict-service on Laptop B  (circuit: CLOSED → try it)
+3. Try any other registered peers...
+✗  All unreachable → booking REJECTED</pre>
+
+<div class="callout amber">
+  <strong>What could be improved</strong>
+  <p>When all Conflict service nodes are unreachable, the booking is simply rejected. A better design would queue the booking and retry automatically once a circuit closes — a "retry saga" pattern. Implementing this requires tracking in-progress bookings and compensating actions, which we documented as a known gap.</p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════
+     10. REDIS SENTINEL
+═══════════════════════════════════════════════════ -->
+<h2 id="sentinel"><span class="num">10</span>Redis Sentinel — Cache High Availability</h2>
+
+<p>Redis is used for enforcement caching and deduplication — both of which are on the hot path of user-facing requests. If Redis just had a single instance, a crash would mean every enforcement check falls back to the REST API (slower) and message deduplication stops working (risk of double-processing).</p>
+
+<p>Redis Sentinel addresses this with automatic failover:</p>
+
+<ul class="check-list">
+  <li><i class="ico ico-pass">✓</i>Three Sentinel processes run alongside Redis, continuously monitoring the primary</li>
+  <li><i class="ico ico-pass">✓</i>If the primary stops responding, Sentinels vote — <strong>2 out of 3 must agree</strong> before a failover starts (quorum)</li>
+  <li><i class="ico ico-pass">✓</i>The winning Sentinel promotes the replica to primary, usually within ~15 seconds</li>
+  <li><i class="ico ico-pass">✓</i>It updates the Redis replication topology and notifies connected clients</li>
+  <li><i class="ico ico-pass">✓</i>Application services reconnect automatically using the Sentinel discovery protocol</li>
+</ul>
+
+<div class="callout blue">
+  <strong>Why quorum 2-of-3?</strong>
+  <p>With only 1 Sentinel, a network partition where the Sentinel can't reach Redis (but Redis is actually fine) would trigger a spurious failover. With 3 Sentinels requiring 2 votes, a single sentinel being disconnected isn't enough to trigger failover — at least 2 must independently agree that the primary is unreachable.</p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════
+     11. POSTGRES REPLICATION
+═══════════════════════════════════════════════════ -->
+<h2 id="replication"><span class="num">11</span>PostgreSQL Streaming Replication</h2>
+
+<p>Each of the four service databases (users, journeys, conflicts, analytics) runs a primary + replica pair using <strong>WAL (Write-Ahead Log) streaming replication</strong>.</p>
+
+<p>WAL is Postgres's built-in mechanism for durability: before any change is applied, it's first written to the WAL. In streaming replication, the replica subscribes to the primary's WAL stream and applies changes in near real-time. Replica lag is typically under 100ms on the same machine.</p>
+
+<h3>How we use it</h3>
+<p>Services maintain two database session pools: one pointing at the primary (for writes), one pointing at the replica (for reads). The appropriate pool is selected via dependency injection in each route handler. This means read-heavy endpoints (listing journeys, checking analytics) don't compete with write operations for the same database connections.</p>
+
+<p>The Analytics service exposes replica lag at <code>/api/analytics/replica-lag</code> by querying <code>pg_stat_replication</code> on each primary. This provides live proof that replication is active.</p>
+
+<div class="callout amber">
+  <strong>When the replica lags or crashes</strong>
+  <p>If replica lag exceeds a threshold, reads fall back to the primary automatically (implemented at the application level). If the replica crashes entirely, the service continues using the primary for both reads and writes — there's no automated promotion of the replica to primary (unlike Redis Sentinel). A proper production system would use Patroni or similar for Postgres HA, but for this demo, manual recovery is acceptable.</p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════
+     12. MULTI-NODE DESIGN
+═══════════════════════════════════════════════════ -->
+<h2 id="multinode"><span class="num">12</span>Multi-Node Design — Active-Active across laptops</h2>
+
+<p class="lead">In the multi-laptop setup, each laptop runs the <strong>complete stack</strong>. Both nodes accept bookings and serve all traffic. There's no designated "master" — this is active-active. Losing one node doesn't take the system down; the other node continues serving requests.</p>
+
+<h3>How nodes discover each other</h3>
+<p>Peer discovery uses two mechanisms:</p>
+<ul class="check-list">
+  <li><i class="ico ico-pass">✓</i><strong>Static (at startup):</strong> Peer IPs are set in <code>.env</code> via <code>PEER_CONFLICT_URLS</code> and <code>PEER_USER_URLS</code> before starting Docker Compose. These are loaded when services start.</li>
+  <li><i class="ico ico-pass">✓</i><strong>Dynamic (at runtime):</strong> Call <code>POST /admin/peers/register</code> with the peer's IP. This propagates to the Journey service (for data replication), User service (for distributed locking), and Conflict service (for failover) — all without restarting anything.</li>
+</ul>
+
+<h3>What gets replicated across nodes</h3>
+<table>
+  <thead><tr><th>Data</th><th>Mechanism</th><th>Timing</th></tr></thead>
+  <tbody>
+    <tr><td>Conflict slots</td><td>After each successful booking, an async goroutine sends <code>POST /internal/slots/replicate</code> to all peer Conflict services</td><td>Near-real-time (milliseconds on LAN)</td></tr>
+    <tr><td>User records</td><td>After registration, async HTTP push to all peer User services</td><td>Near-real-time</td></tr>
+    <tr><td>Journey records</td><td>Full state pull from peers on startup + every 5 minutes (periodic re-sync)</td><td>Catch-up on restart; 5-min background</td></tr>
+  </tbody>
+</table>
+
+<h3>Peer health monitoring</h3>
+<p>Each node pings all registered peers' <code>/health</code> endpoint every 10 seconds. Based on consecutive missed pings, each peer moves through a state machine:</p>
+<div class="states" style="margin: 16px 0;">
+  <div class="state" style="background:rgba(16,185,129,0.1); border:1.5px solid var(--green); color:#6ee7b7;">ALIVE</div>
+  <div class="state-arrow"><span>→</span><small>3 misses</small></div>
+  <div class="state" style="background:rgba(245,158,11,0.1); border:1.5px solid var(--amber); color:#fcd34d;">SUSPECT</div>
+  <div class="state-arrow"><span>→</span><small>6 misses</small></div>
+  <div class="state" style="background:rgba(244,63,94,0.1); border:1.5px solid var(--red); color:#fda4af;">DEAD</div>
+  <div class="state-arrow"><span>→</span><small>ping succeeds</small></div>
+  <div class="state" style="background:rgba(16,185,129,0.1); border:1.5px solid var(--green); color:#6ee7b7;">ALIVE</div>
+</div>
+<p>If fewer than 50% of registered peers are ALIVE, the node enters <strong>LOCAL_ONLY mode</strong> — it stops trying to reach peers and serves requests from its local data only.</p>
+
+<div class="callout amber">
+  <strong>The known gap: millisecond-window double booking</strong>
+  <p>If two drivers submit bookings for the exact same slot at almost exactly the same time — one to each laptop — both bookings can be CONFIRMED. Laptop A's Conflict service hasn't yet received Laptop B's slot replication. Without a consensus protocol (Raft, Paxos), this window cannot be fully closed. At demo scale and realistic booking patterns, this rarely occurs. A production system would use a consensus protocol or route all writes for a given route to a single "home" node.</p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════
+     13. CLIENT-SIDE FAILOVER
+═══════════════════════════════════════════════════ -->
+<h2 id="failover"><span class="num">13</span>Client-Side Failover</h2>
+
+<p>Every API call from the browser goes through a JavaScript function called <code>resilientFetch</code>. This function knows about all available peer nodes and retries automatically on failure:</p>
+
+<ol class="step-list">
+  <li>
+    <div class="step-num">1</div>
+    <div class="step-body">
+      <div class="step-title">Try the current primary URL</div>
+      <p>Usually the user's own laptop's HAProxy at <code>http://&lt;my-ip&gt;:8080</code>.</p>
+    </div>
+  </li>
+  <li>
+    <div class="step-num">2</div>
+    <div class="step-body">
+      <div class="step-title">On 5xx or network error: try the next peer</div>
+      <p>4xx responses (like "booking rejected") pass through unchanged — a rejected booking isn't a server failure. Only server errors trigger failover.</p>
+    </div>
+  </li>
+  <li>
+    <div class="step-num">3</div>
+    <div class="step-body">
+      <div class="step-title">The peer list is fetched from <code>/health/nodes</code> at login</div>
+      <p>It's stored in <code>localStorage</code>, so the browser can failover even before the next login — the peer list survives page refreshes.</p>
+    </div>
+  </li>
+</ol>
+
+<p>Because all nodes share the same JWT signing secret, a token issued on Laptop A is valid on Laptop B. The user is never asked to log in again after a failover — the session migrates transparently.</p>
+
+<p>The WebSocket connection to Notification service uses the same peer list, cycling to a peer after two consecutive disconnects.</p>
+
+<h3>Simulating a node failure</h3>
+<p>Calling <code>POST /admin/simulate/fail</code> causes the Journey service and User service to return 503 on all requests. The browser detects this on the next request and switches to the peer's URL, showing "Failover: &lt;peer-ip&gt;" in the navigation bar. Calling <code>POST /admin/simulate/recover</code> restores both services, and the next health check from the peer marks this node ALIVE again.</p>
+
+
+<!-- ══════════════════════════════════════════════════
+     14. DESIGN CHOICES & TRADEOFFS
+═══════════════════════════════════════════════════ -->
+<h2 id="tradeoffs"><span class="num">14</span>Design Choices &amp; Why</h2>
+
+<table>
+  <thead><tr><th>Decision</th><th>What we chose</th><th>Why</th><th>What we gave up</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Booking protocol</td>
+      <td>Saga (default), 2PC optional</td>
+      <td>Saga is faster and works even if the Conflict service restarts mid-flow. 2PC is stricter — slot held between PREPARE and COMMIT — but blocks until coordinator decides.</td>
+      <td>Saga has a gap: if the Journey service crashes after conflict approval but before DB write, the slot may be held unnecessarily until it expires.</td>
+    </tr>
+    <tr>
+      <td>Conflict isolation</td>
+      <td>SERIALIZABLE + SELECT FOR UPDATE, Conflict service only</td>
+      <td>Only true way to prevent double-booking under concurrent load. READ COMMITTED allows two transactions to both see "1 slot remaining" and both commit.</td>
+      <td>Higher lock contention in the Conflict service. Acceptable because the check is fast and lock scope is narrow (one grid cell).</td>
+    </tr>
+    <tr>
+      <td>Event delivery</td>
+      <td>Transactional outbox + RabbitMQ</td>
+      <td>Outbox ensures no event is ever lost — it's atomic with the DB write. RabbitMQ decouples producers from consumers; downstream services don't need to be up for a booking to succeed.</td>
+      <td>2-second polling delay. More operational complexity. Downstream services lag during RabbitMQ outages (though they catch up automatically).</td>
+    </tr>
+    <tr>
+      <td>Multi-node consistency</td>
+      <td>Active-active eventually consistent</td>
+      <td>Raft/Paxos adds significant complexity, requires a dedicated leader election round on every write, and introduces leader-election latency. For a 2-laptop demo with low booking rates, eventual consistency is sufficient.</td>
+      <td>Millisecond window where two nodes can both confirm the same slot. Documented and accepted as a known trade-off.</td>
+    </tr>
+    <tr>
+      <td>Cache strategy</td>
+      <td>TTL eviction + event-driven invalidation</td>
+      <td>TTL handles the normal case (journey expires naturally). Event-driven invalidation (on cancel/complete) handles early removal without a full cache flush or expensive cache-aside logic.</td>
+      <td>Cache is cold on startup. First enforcement check always misses. No automatic cache warming on boot.</td>
+    </tr>
+    <tr>
+      <td>Service languages</td>
+      <td>Python (User, Journey, Enforcement) + Go (Conflict, Notification, Analytics)</td>
+      <td>Python (FastAPI) is faster to write complex orchestration code. Go handles concurrent operations better — thousands of WebSocket connections in Notification, tight mutex locking in Conflict, concurrent counter updates in Analytics.</td>
+      <td>Two languages means two codebases. Go services can't share the Python <code>shared/</code> library — equivalent packages had to be written separately.</td>
+    </tr>
+    <tr>
+      <td>Sharding</td>
+      <td>MD5 modulo, write-authority only</td>
+      <td>All nodes hold all data (active-active). Sharding only governs which node is the "authoritative writer" for a given email or route ID. Simple to implement and reason about.</td>
+      <td>Modulo hashing (not consistent hashing) — adding a node changes shard assignments for all existing keys. For 2-3 nodes this is acceptable; for dynamic scaling, a consistent hash ring would be needed.</td>
+    </tr>
+    <tr>
+      <td>Distributed lock</td>
+      <td>Redlock-style 2-phase (SETNX on each peer)</td>
+      <td>Prevents two nodes from simultaneously accepting the same email address. Simpler than a full Redlock implementation while providing equivalent guarantees at 2-3 node scale.</td>
+      <td>If a peer is unreachable during registration, the lock request fails conservatively (rejects). Network partition during registration causes 409 even if the email is actually unique.</td>
+    </tr>
+  </tbody>
+</table>
+
+
+<!-- ══════════════════════════════════════════════════
+     15. KNOWN LIMITATIONS
+═══════════════════════════════════════════════════ -->
+<h2 id="limitations"><span class="num">15</span>Known Limitations</h2>
+
+<p>These are documented honestly — deliberate trade-offs accepted for the scope of this project, not hidden bugs.</p>
+
+<div class="cols">
+  <div class="callout red">
+    <strong>No consensus protocol → possible double booking</strong>
+    <p>Two simultaneous bookings on two different nodes within the replication window can both be confirmed for the same slot. A Raft or Paxos-based system would route all writes through a single elected leader, eliminating this. At demo scale and realistic booking rates, this window is rarely hit.</p>
+  </div>
+  <div class="callout amber">
+    <strong>No saga compensation retry</strong>
+    <p>If the Conflict service is unreachable, the booking fails immediately. There's no retry queue or compensation loop. A production saga would enqueue the retry and attempt again once the circuit closes.</p>
+  </div>
+  <div class="callout amber">
+    <strong>JWT tokens not blacklisted on logout</strong>
+    <p>A revoked token remains valid until its natural expiry. Logout is client-side only (token removed from browser storage). A production system would maintain a Redis deny-list of invalidated token IDs.</p>
+  </div>
+  <div class="callout amber">
+    <strong>WebSocket registry is in-memory</strong>
+    <p>If the Notification service restarts, all WebSocket connections drop. Clients must reconnect. Notification <em>content</em> is preserved in Redis history, but the live push is lost. Horizontal scaling would require Redis Pub/Sub fan-out.</p>
+  </div>
+  <div class="callout amber">
+    <strong>Enforcement cache cold on startup</strong>
+    <p>After a restart, the Redis cache is empty. A manual rebuild endpoint exists (<code>POST /admin/recovery/rebuild-enforcement-cache</code>) but it's not called automatically. The first enforcement check for every vehicle pays the full REST fallback cost.</p>
+  </div>
+  <div class="callout amber">
+    <strong>Outbox polls every 2 seconds</strong>
+    <p>Downstream services (Notification, Analytics, Enforcement) lag up to 2 seconds behind booking confirmation. PostgreSQL LISTEN/NOTIFY would reduce this to near-zero latency.</p>
+  </div>
+  <div class="callout blue">
+    <strong>No distributed tracing UI</strong>
+    <p>Correlation IDs (<code>X-Request-ID</code>) propagate across all services and appear in every log line. But there's no Jaeger or Zipkin integration to visualise traces. Cross-service latency debugging requires grepping logs manually.</p>
+  </div>
+  <div class="callout blue">
+    <strong>RabbitMQ cluster unreliable on a single host</strong>
+    <p>A 3-node RabbitMQ cluster is configured, but Erlang distribution is unreliable when all three nodes run on the same Docker host (networking and node naming conflicts). The cluster works correctly across physical machines. Single-machine demos effectively run a single broker.</p>
+  </div>
+</div>
+
+<hr>
+
+<div class="callout green">
+  <strong>What the system does well</strong>
+  <p>No confirmed booking is ever lost (transactional outbox). Single node failure is transparent to users (shared JWT, resilientFetch). Conflict detection is atomic and correct under concurrent load (SERIALIZABLE). Enforcement checks are fast from cache. Circuit breakers prevent cascading failures. The entire system is observable — every cross-service call carries a correlation ID, partition status is exposed on every response, and replica lag is monitored.</p>
+</div>
+
+<p style="text-align:center; color:var(--dim); font-size:13px; margin-top:40px;">Group J · CS7NS6 Distributed Systems · Trinity College Dublin</p>
+
+</div><!-- end .page -->
+</div><!-- end .main -->
+
+<script>
+  // Highlight active sidebar link on scroll
+  const sections = document.querySelectorAll('h2[id]');
+  const links = document.querySelectorAll('.sidebar a[href^="#"]');
+
+  const obs = new IntersectionObserver(entries => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        links.forEach(l => l.classList.remove('active'));
+        const active = document.querySelector(`.sidebar a[href="#${e.target.id}"]`);
+        if (active) active.classList.add('active');
+      }
+    });
+  }, { rootMargin: '-20% 0px -70% 0px' });
+
+  sections.forEach(s => obs.observe(s));
+</script>
+</body>
+</html>

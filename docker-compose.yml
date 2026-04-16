@@ -47,8 +47,8 @@ services:
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "15673:15672"
+    hostname: rabbitmq
     environment:
       RABBITMQ_ERLANG_COOKIE: "journey_cluster_cookie"
       RABBITMQ_DEFAULT_USER: journey_admin
@@ -68,6 +68,7 @@ services:
 
   rabbitmq-2:
     image: rabbitmq:3.13-management-alpine
+    hostname: rabbitmq-2
     environment:
       RABBITMQ_ERLANG_COOKIE: "journey_cluster_cookie"
       RABBITMQ_DEFAULT_USER: journey_admin
@@ -99,6 +100,7 @@ services:
 
   rabbitmq-3:
     image: rabbitmq:3.13-management-alpine
+    hostname: rabbitmq-3
     environment:
       RABBITMQ_ERLANG_COOKIE: "journey_cluster_cookie"
       RABBITMQ_DEFAULT_USER: journey_admin
@@ -167,7 +169,8 @@ services:
       - sh
       - -c
       - |
-        echo "sentinel monitor mymaster redis 6379 2" > /tmp/sentinel.conf
+        echo "sentinel resolve-hostnames yes" > /tmp/sentinel.conf
+        echo "sentinel monitor mymaster redis 6379 2" >> /tmp/sentinel.conf
         echo "sentinel down-after-milliseconds mymaster 5000" >> /tmp/sentinel.conf
         echo "sentinel failover-timeout mymaster 10000" >> /tmp/sentinel.conf
         echo "sentinel parallel-syncs mymaster 1" >> /tmp/sentinel.conf
@@ -189,7 +192,8 @@ services:
       - sh
       - -c
       - |
-        echo "sentinel monitor mymaster redis 6379 2" > /tmp/sentinel.conf
+        echo "sentinel resolve-hostnames yes" > /tmp/sentinel.conf
+        echo "sentinel monitor mymaster redis 6379 2" >> /tmp/sentinel.conf
         echo "sentinel down-after-milliseconds mymaster 5000" >> /tmp/sentinel.conf
         echo "sentinel failover-timeout mymaster 10000" >> /tmp/sentinel.conf
         echo "sentinel parallel-syncs mymaster 1" >> /tmp/sentinel.conf
@@ -209,7 +213,8 @@ services:
       - sh
       - -c
       - |
-        echo "sentinel monitor mymaster redis 6379 2" > /tmp/sentinel.conf
+        echo "sentinel resolve-hostnames yes" > /tmp/sentinel.conf
+        echo "sentinel monitor mymaster redis 6379 2" >> /tmp/sentinel.conf
         echo "sentinel down-after-milliseconds mymaster 5000" >> /tmp/sentinel.conf
         echo "sentinel failover-timeout mymaster 10000" >> /tmp/sentinel.conf
         echo "sentinel parallel-syncs mymaster 1" >> /tmp/sentinel.conf
