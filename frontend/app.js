@@ -139,6 +139,7 @@ function go(view) {
   }
   if(view === 'journeys') { loadJourneys(); loadVehicles(); if(predefinedRoutes.length === 0) loadPredefinedRoutes(); }
   if(view === 'simulate') { loadDashboard(); startNodeHealthPolling(); }
+  if(view === 'enforcement') { document.getElementById('enf-result').style.display = 'none'; }
 }
 
 function initMap() {
@@ -1166,6 +1167,90 @@ async function simRebuildCache() {
         simLog(`Cached ${d.journeys_cached||0} active journeys`, 'success');
         showToast(`Cached ${d.journeys_cached||0} journeys`, 'success');
     } catch(e) { simLog(`Error: ${e}`, 'error'); }
+}
+
+// =============================================
+// Enforcement Agent — booking verification
+// =============================================
+
+function enfSwitchTab(tab) {
+    document.getElementById('enf-form-vehicle').style.display = tab === 'vehicle' ? 'block' : 'none';
+    document.getElementById('enf-form-license').style.display = tab === 'license'  ? 'block' : 'none';
+    document.getElementById('enf-tab-vehicle').classList.toggle('active', tab === 'vehicle');
+    document.getElementById('enf-tab-license').classList.toggle('active', tab === 'license');
+    document.getElementById('enf-result').style.display = 'none';
+}
+
+async function enfLookup(type) {
+    const query = type === 'vehicle'
+        ? document.getElementById('enf-plate').value.trim()
+        : document.getElementById('enf-license').value.trim();
+
+    if (!query) {
+        showToast(type === 'vehicle' ? 'Enter a vehicle plate' : 'Enter a licence number', 'error');
+        return;
+    }
+
+    const url = type === 'vehicle'
+        ? `/api/enforcement/verify/vehicle/${encodeURIComponent(query)}`
+        : `/api/enforcement/verify/license/${encodeURIComponent(query)}`;
+
+    try {
+        const r = await authFetch(url);
+        if (r.status === 403) {
+            showToast('Access denied — Enforcement Agent role required', 'error');
+            return;
+        }
+        const stale = r.headers.get('X-Data-Staleness') === 'STALE';
+        const d = await r.json();
+        if (!r.ok) throw new Error(parseErrorDetail(d));
+        renderEnfResult(d, query, type, stale);
+    } catch(err) {
+        showToast('Verification failed: ' + err.message, 'error');
+    }
+}
+
+function renderEnfResult(d, query, type, stale) {
+    const resultEl = document.getElementById('enf-result');
+    const titleEl  = document.getElementById('enf-result-title');
+    const bodyEl   = document.getElementById('enf-result-body');
+
+    const valid = d.is_valid;
+    const statusColor = valid ? 'var(--success)' : 'var(--danger)';
+    const statusText  = valid ? 'ACTIVE BOOKING FOUND' : 'NO ACTIVE BOOKING';
+    const statusIcon  = valid ? '✅' : '🚫';
+
+    titleEl.innerHTML = `${statusIcon} ${type === 'vehicle' ? 'Vehicle' : 'Driver'}: <span style="color:${statusColor}">${statusText}</span>`;
+
+    const rows = [
+        ['Queried', type === 'vehicle' ? `Plate: ${query}` : `Licence: ${query}`],
+        ['Checked at', d.checked_at ? new Date(d.checked_at).toLocaleString() : '—'],
+        ...(valid ? [
+            ['Journey ID',  d.journey_id   || '—'],
+            ['Status',      d.journey_status || '—'],
+            ['Route',       d.origin && d.destination ? `${d.origin} → ${d.destination}` : '—'],
+            ['Departure',   d.departure_time ? new Date(d.departure_time).toLocaleString() : '—'],
+            ['Est. Arrival',d.estimated_arrival_time ? new Date(d.estimated_arrival_time).toLocaleString() : '—'],
+            ['Driver ID',   d.driver_id || '—'],
+        ] : []),
+    ];
+
+    const tableHtml = `
+        <table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:12px">
+            ${rows.map(([k, v]) => `
+                <tr style="border-bottom:1px solid rgba(255,255,255,0.05)">
+                    <td style="padding:8px 0;color:var(--text-muted);width:40%">${k}</td>
+                    <td style="padding:8px 0;font-weight:500">${v}</td>
+                </tr>
+            `).join('')}
+        </table>
+        ${stale ? `<div style="margin-top:12px;padding:8px 12px;background:rgba(255,234,0,0.1);border-left:3px solid var(--warning);border-radius:4px;font-size:12px;color:var(--warning)">
+            ⚠ Data may be stale — Journey Service is currently partitioned. Results are from local cache.
+        </div>` : ''}
+    `;
+
+    bodyEl.innerHTML = tableHtml;
+    resultEl.style.display = 'block';
 }
 
 // =============================================
